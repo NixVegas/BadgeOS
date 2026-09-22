@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+#include "sg2000-milkv-duo-s-riscv.dts"
+
+/* Opt-in display graph for the manual test-pattern host; ordinary images omit it.
+ * IIC2 uses SG2000 BGA J13/J14, function 0, fixed 1.8 V with 10k pull-ups
+ * (drivers/pinctrl/sophgo/pinctrl-sg2000.c).
+ */
+#define DUOS_IIC2_SCL PINPOS('J', 13)
+#define DUOS_IIC2_SDA PINPOS('J', 14)
+/ { aliases { i2c2 = &i2c2; }; };
+&pinctrl {
+	iic2_cfg: iic2-cfg {
+		iic2-scl-pins {
+			pinmux = <PINMUX(DUOS_IIC2_SCL, 0)>;
+			power-source = <1800>;
+		};
+		iic2-sda-pins {
+			pinmux = <PINMUX(DUOS_IIC2_SDA, 0)>;
+			power-source = <1800>;
+		};
+	};
+};
+
+/* Windows from osdrv aa542c41 vpss_core.c:_init_resources, base.c:base_probe
+ * and scaler_reg.h. Register-interface clock 128 (CLK_CFG_REG_VIP) must stay
+ * on both the syscon and the DSI host: mfd/syscon enables it around each
+ * regmap access and the host holds it across its direct accesses.
+ */
+/ {
+	soc {
+		vip_sys: syscon@a0c8000 {
+			compatible = "sophgo,sg2000-vip-sys", "syscon";
+			reg = <0x0a0c8000 0x1000>;
+			clocks = <&clk CLK_CFG_REG_VIP>;
+		};
+
+		sophgo_dsi: dsi@a080000 {
+			compatible = "sophgo,sg2000-dsi";
+			reg = <0x0a080000 0x1000>,
+			      <0x0a088000 0x1000>,
+			      <0x0a08a000 0x1000>,
+			      <0x0a0d1000 0x1000>;
+			reg-names = "sc_top", "disp", "dsi_mac", "dphy";
+			sophgo,vip-sys = <&vip_sys>;
+			clocks = <&clk CLK_SC_TOP_VIP>,
+				 <&clk CLK_DISP_VIP>, <&clk CLK_DSI_MAC_VIP>,
+				 <&clk CLK_DSI_ESC>, <&clk CLK_DISPPLL>,
+				 <&clk CLK_DISP_SRC_VIP>, <&clk CLK_DSI_SYNTH_SRC>,
+				 <&clk CLK_AXI6>, <&clk CLK_CFG_REG_VIP>;
+			clock-names = "sc_top", "clk_disp", "clk_dsi", "dsi_esc",
+				      "disppll", "disp_src", "dsi_src", "esc_parent", "cfg_reg";
+			port {
+				dsi_out: endpoint {
+					data-lanes = <0 1 2 3>;
+					remote-endpoint = <&lt8912_in>;
+				};
+			};
+		};
+	};
+};
+
+/* NixVegas/pcb d97cfc1d2f50a0447eaf80c7d025e58900b8f5e6, kicad/hdmi.kicad_sch:
+ * U16 RESET_N is an RC power-on reset (R77 10k, C47 100n) with no CPU GPIO,
+ * so the bridge has no reset-gpios and is stopped through its own register.
+ * +1V8 feeds VDD, VCCA and VCCA_HDMIPLL through L4, L3 and L2 with no enables.
+ */
+/ {
+	lt8912_1v8: regulator-lt8912-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "lt8912-board-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+
+	hdmi: hdmi-connector {
+		compatible = "hdmi-connector";
+		type = "a";
+		/* U1 and U16 share I2C_SENSOR1 through FET1/FET2 to HDMI pins
+		 * 15/16; HPD reaches U16 through Q12, not the CPU.
+		 */
+		ddc-i2c-bus = <&i2c2>;
+		port {
+			hdmi_in: endpoint {
+				remote-endpoint = <&lt8912_out>;
+			};
+		};
+	};
+};
+
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-0 = <&iic2_cfg>;
+	pinctrl-names = "default";
+	lt8912: bridge@48 {
+		compatible = "lontium,lt8912b";
+		reg = <0x48>;
+		vdd-supply = <&lt8912_1v8>;
+		vccmipirx-supply = <&lt8912_1v8>;
+		vccsysclk-supply = <&lt8912_1v8>;
+		vcclvdstx-supply = <&lt8912_1v8>;
+		vcchdmitx-supply = <&lt8912_1v8>;
+		vcclvdspll-supply = <&lt8912_1v8>;
+		vcchdmipll-supply = <&lt8912_1v8>;
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port@0 {
+				reg = <0>;
+				lt8912_in: endpoint {
+					data-lanes = <0 1 2 3>;
+					remote-endpoint = <&dsi_out>;
+				};
+			};
+			port@1 {
+				reg = <1>;
+				lt8912_out: endpoint {
+					remote-endpoint = <&hdmi_in>;
+				};
+			};
+		};
+	};
+};

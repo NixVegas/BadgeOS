@@ -1,0 +1,615 @@
+Subject: [PATCH] SG2000 display: LT8912B lifecycle and DISPPLL/DSI source clocks
+
+drm/bridge: lt8912b
+- Power and initialize the receiver in pre_enable, after the DSI host has
+  prepared LP-11, instead of at attach; latch timing in enable after the
+  host streams; reset the receiver in disable and drop the supplies in
+  post_disable. The callbacks are void, so results go to a shared status
+  (include/drm/bridge/lt8912b.h) the host binds.
+- Without a reset GPIO (the badge's RESET_N is an RC power-on reset) stop
+  the receiver through main register 0x03.
+- Drop the LVDS setup and the independent PM resume, which would release
+  reset and start video without the host. Detach from the host before the
+  bridge is removed.
+
+clk: sophgo
+- SG2000 TRM v1.0 (sophgo/sophgo-doc 370d81b365ed528dc8f5dc91f63ed445e1142d4d,
+  pll_g2 and pll_g6 register tables): lock bits are 16..20 (G2) and 16..18
+  (G6); the driver polled the updating bits 0..4.
+- DISPPLL reports rate 0 while powered down, unlocked or updating, uncached,
+  so a consumer can observe lock after enabling it.
+- Expose the DSI PHY synthesizer source gate (pll_g2_ssc_syn_ctrl bit 1) as
+  clk_dsi_synth_src, binding id 162, without retuning MIPIMPLL.
+
+Prepared with Claude and Codex assistance.
+
+--- a/drivers/gpu/drm/bridge/lontium-lt8912b.c
++++ b/drivers/gpu/drm/bridge/lontium-lt8912b.c
+@@ -10,6 +10,7 @@
+ #include <linux/media-bus-format.h>
+ #include <linux/regmap.h>
+ 
++#include <drm/bridge/lt8912b.h>
+ #include <drm/drm_probe_helper.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_edid.h>
+@@ -45,7 +46,10 @@
+ 	struct regulator_bulk_data supplies[7];
+ 
+ 	u8 data_lanes;
+-	bool is_power_on;
++	struct lt8912b_pipeline *pipeline;
++	bool supplies_on;
++	bool is_power_on; /* receiver initialized */
++	bool video_on;
+ };
+ 
+ static int lt8912_write_init_config(struct lt8912 *lt)
+@@ -165,40 +169,6 @@
+ 	return ret;
+ };
+ 
+-/* enable LVDS output with some hardcoded configuration, not required for the HDMI output */
+-static int lt8912_write_lvds_config(struct lt8912 *lt)
+-{
+-	const struct reg_sequence seq[] = {
+-		// lvds power up
+-		{0x44, 0x30},
+-		{0x51, 0x05},
+-
+-		// core pll bypass
+-		{0x50, 0x24}, // cp=50uA
+-		{0x51, 0x2d}, // Pix_clk as reference, second order passive LPF PLL
+-		{0x52, 0x04}, // loopdiv=0, use second-order PLL
+-		{0x69, 0x0e}, // CP_PRESET_DIV_RATIO
+-		{0x69, 0x8e},
+-		{0x6a, 0x00},
+-		{0x6c, 0xb8}, // RGD_CP_SOFT_K_EN,RGD_CP_SOFT_K[13:8]
+-		{0x6b, 0x51},
+-
+-		{0x04, 0xfb}, // core pll reset
+-		{0x04, 0xff},
+-
+-		// scaler bypass
+-		{0x7f, 0x00}, // disable scaler
+-		{0xa8, 0x13}, // 0x13: JEIDA, 0x33: VESA
+-
+-		{0x02, 0xf7}, // lvds pll reset
+-		{0x02, 0xff},
+-		{0x03, 0xcf},
+-		{0x03, 0xff},
+-	};
+-
+-	return regmap_multi_reg_write(lt->regmap[I2C_MAIN], seq, ARRAY_SIZE(seq));
+-};
+-
+ static inline struct lt8912 *bridge_to_lt8912(struct drm_bridge *b)
+ {
+ 	return container_of(b, struct lt8912, bridge);
+@@ -260,24 +230,62 @@
+ {
+ 	int ret;
+ 
++	/* Never release reset over a stale, failed supply release. */
++	if (lt->supplies_on)
++		return -EBUSY;
+ 	ret = regulator_bulk_enable(ARRAY_SIZE(lt->supplies), lt->supplies);
+ 	if (ret)
+ 		return ret;
+ 
++	lt->supplies_on = true;
++	if (lt->pipeline)
++		lt->pipeline->supplies_owned = true;
+ 	gpiod_set_value_cansleep(lt->gp_reset, 0);
+ 	msleep(20);
+ 
+ 	return 0;
+ }
+ 
+-static void lt8912_hard_power_off(struct lt8912 *lt)
++/* Without a reset GPIO (the badge wires RESET_N to an RC power-on reset) the
++ * receiver is stopped through the main-bank reset register the vendor recipe
++ * uses. This stops video; it does not remove power.
++ */
++static int lt8912_stop(struct lt8912 *lt)
+ {
++	int ret;
++
++	if (!lt->gp_reset && lt->supplies_on) {
++		ret = regmap_write(lt->regmap[I2C_MAIN], 0x03, 0x7f);
++		if (ret) {
++			lt8912b_pipeline_error(lt->pipeline, "bridge receiver stop", ret);
++			return ret;
++		}
++	}
+ 	gpiod_set_value_cansleep(lt->gp_reset, 1);
+-	msleep(20);
++	lt->video_on = false;
++	lt->is_power_on = false;
++	if (lt->pipeline)
++		lt->pipeline->prepared = lt->pipeline->started = false;
++	return 0;
++}
++
++static void lt8912_hard_power_off(struct lt8912 *lt)
++{
++	int ret;
+ 
+-	regulator_bulk_disable(ARRAY_SIZE(lt->supplies), lt->supplies);
++	if (lt8912_stop(lt) || !lt->supplies_on)
++		return;
++	msleep(20);
+ 
+-	lt->is_power_on = false;
++	ret = regulator_bulk_disable(ARRAY_SIZE(lt->supplies), lt->supplies);
++	if (ret) {
++		lt8912b_pipeline_error(lt->pipeline, "bridge supplies release", ret);
++		dev_err(lt->dev, "failed to disable supplies: %d\n", ret);
++		return;
++	}
++	lt->supplies_on = false;
++	if (lt->pipeline)
++		lt->pipeline->supplies_owned = false;
+ }
+ 
+ static int lt8912_video_setup(struct lt8912 *lt)
+@@ -340,25 +348,26 @@
+ 				  vsync_activehigh ? BIT(0) : 0);
+ 	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xab, BIT(1),
+ 				  hsync_activehigh ? BIT(1) : 0);
+-	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xb2, BIT(0),
+-				  lt->connector.display_info.is_hdmi ? BIT(0) : 0);
++	/* HDMI mode: this bridge is attached without its own connector. */
++	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xb2, BIT(0), BIT(0));
+ 
+ 	return ret;
+ }
+ 
+ static int lt8912_soft_power_on(struct lt8912 *lt)
+ {
+-	if (!lt->is_power_on) {
+-		u32 lanes = lt->data_lanes;
+-
+-		lt8912_write_init_config(lt);
+-		regmap_write(lt->regmap[I2C_CEC_DSI], 0x13, lanes & 3);
+-
+-		lt8912_write_mipi_basic_config(lt);
+-
+-		lt->is_power_on = true;
+-	}
++	int ret;
+ 
++	ret = lt8912_write_init_config(lt);
++	if (ret)
++		return ret;
++	ret = regmap_write(lt->regmap[I2C_CEC_DSI], 0x13, lt->data_lanes & 3);
++	if (ret)
++		return ret;
++	ret = lt8912_write_mipi_basic_config(lt);
++	if (ret)
++		return ret;
++	lt->is_power_on = true;
+ 	return 0;
+ }
+ 
+@@ -378,10 +387,6 @@
+ 	if (ret < 0)
+ 		goto end;
+ 
+-	ret = lt8912_write_lvds_config(lt);
+-	if (ret < 0)
+-		goto end;
+-
+ end:
+ 	return ret;
+ }
+@@ -457,11 +462,90 @@
+ 	drm_display_mode_to_videomode(adj, &lt->mode);
+ }
+ 
++/*
++ * Host contract: the host prepares LP-11 and the clock lane before pre_enable
++ * releases reset, starts video before enable latches timing and DDS, stops
++ * video after disable resets the receiver, and releases the PHY after
++ * post_disable drops the supplies. The callbacks are void, so results go to
++ * the shared status; nothing here reports the display as working.
++ */
++void lt8912b_pipeline_bind(struct drm_bridge *bridge, struct lt8912b_pipeline *pipeline)
++{
++	bridge_to_lt8912(bridge)->pipeline = pipeline;
++}
++EXPORT_SYMBOL_GPL(lt8912b_pipeline_bind);
++
++static void lt8912_bridge_pre_enable(struct drm_bridge *bridge)
++{
++	struct lt8912 *lt = bridge_to_lt8912(bridge);
++	int ret;
++
++	if (lt->pipeline && (lt->pipeline->error || !lt->pipeline->host_prepared)) {
++		lt8912b_pipeline_error(lt->pipeline, "bridge prerequisite", -EACCES);
++		return;
++	}
++	if (!lt->is_power_on) {
++		ret = lt8912_hard_power_on(lt);
++		if (!ret)
++			ret = lt8912_soft_power_on(lt);
++		if (ret) {
++			lt8912b_pipeline_error(lt->pipeline, "bridge prepare", ret);
++			dev_err(lt->dev, "bridge preparation failed: %d\n", ret);
++			/* Supplies stay owned until the ordered post_disable. */
++			lt8912_stop(lt);
++		}
++	}
++	if (lt->pipeline)
++		lt->pipeline->prepared = lt->is_power_on;
++}
++
+ static void lt8912_bridge_enable(struct drm_bridge *bridge)
+ {
+ 	struct lt8912 *lt = bridge_to_lt8912(bridge);
++	int ret;
+ 
+-	lt8912_video_on(lt);
++	if (lt->pipeline && (lt->pipeline->error || !lt->pipeline->host_started)) {
++		lt8912b_pipeline_error(lt->pipeline, "bridge stream prerequisite", -EACCES);
++		return;
++	}
++	if (lt->is_power_on && !lt->video_on) {
++		ret = lt8912_video_on(lt);
++		if (ret) {
++			lt8912b_pipeline_error(lt->pipeline, "bridge enable", ret);
++			dev_err(lt->dev, "video programming failed: %d\n", ret);
++			lt8912_stop(lt);
++		} else {
++			lt->video_on = true;
++		}
++	}
++	if (lt->pipeline)
++		lt->pipeline->started = lt->video_on;
++}
++
++static void lt8912_bridge_disable(struct drm_bridge *bridge)
++{
++	lt8912_stop(bridge_to_lt8912(bridge));
++}
++
++static void lt8912_bridge_post_disable(struct drm_bridge *bridge)
++{
++	struct lt8912 *lt = bridge_to_lt8912(bridge);
++
++	if (lt->pipeline && lt->pipeline->host_started) {
++		lt8912b_pipeline_error(lt->pipeline, "bridge waits for host stop", -EBUSY);
++		return;
++	}
++	lt8912_hard_power_off(lt);
++	if (lt->supplies_on)
++		lt8912b_pipeline_error(lt->pipeline, "bridge supplies release", -EIO);
++}
++
++/* Released explicitly from remove so host operations drain before the
++ * bridge, its DT references and I2C resources go away.
++ */
++static void lt8912_detach_dsi(void *data)
++{
++	mipi_dsi_detach(data);
+ }
+ 
+ static int lt8912_attach_dsi(struct lt8912 *lt)
+@@ -496,13 +580,13 @@
+ 			  MIPI_DSI_MODE_VIDEO_NO_HFP |
+ 			  MIPI_DSI_MODE_NO_EOT_PACKET;
+ 
+-	ret = devm_mipi_dsi_attach(dev, dsi);
++	ret = mipi_dsi_attach(dsi);
+ 	if (ret < 0) {
+ 		dev_err(dev, "failed to attach dsi to host\n");
+ 		return ret;
+ 	}
+ 
+-	return 0;
++	return devm_add_action_or_reset(dev, lt8912_detach_dsi, dsi);
+ }
+ 
+ static void lt8912_bridge_hpd_cb(void *data, enum drm_connector_status status)
+@@ -564,19 +648,8 @@
+ 		}
+ 	}
+ 
+-	ret = lt8912_hard_power_on(lt);
+-	if (ret)
+-		return ret;
+-
+-	ret = lt8912_soft_power_on(lt);
+-	if (ret)
+-		goto error;
+-
++	/* Power and initialization wait for the host's pre_enable. */
+ 	return 0;
+-
+-error:
+-	lt8912_hard_power_off(lt);
+-	return ret;
+ }
+ 
+ static void lt8912_bridge_detach(struct drm_bridge *bridge)
+@@ -638,37 +711,17 @@
+ 	.detach = lt8912_bridge_detach,
+ 	.mode_valid = lt8912_bridge_mode_valid,
+ 	.mode_set = lt8912_bridge_mode_set,
++	.pre_enable = lt8912_bridge_pre_enable,
+ 	.enable = lt8912_bridge_enable,
++	.disable = lt8912_bridge_disable,
++	.post_disable = lt8912_bridge_post_disable,
+ 	.detect = lt8912_bridge_detect,
+ 	.edid_read = lt8912_bridge_edid_read,
+ };
+ 
+-static int lt8912_bridge_resume(struct device *dev)
+-{
+-	struct lt8912 *lt = dev_get_drvdata(dev);
+-	int ret;
+-
+-	ret = lt8912_hard_power_on(lt);
+-	if (ret)
+-		return ret;
+-
+-	ret = lt8912_soft_power_on(lt);
+-	if (ret)
+-		return ret;
+-
+-	return lt8912_video_on(lt);
+-}
+-
+-static int lt8912_bridge_suspend(struct device *dev)
+-{
+-	struct lt8912 *lt = dev_get_drvdata(dev);
+-
+-	lt8912_hard_power_off(lt);
+-
+-	return 0;
+-}
+-
+-static DEFINE_SIMPLE_DEV_PM_OPS(lt8912_bridge_pm_ops, lt8912_bridge_suspend, lt8912_bridge_resume);
++/* System sleep belongs to the host's ordered chain: an independent resume
++ * would release reset and start video before the host's LP-11.
++ */
+ 
+ static int lt8912_get_regulators(struct lt8912 *lt)
+ {
+@@ -804,6 +857,7 @@
+ {
+ 	struct lt8912 *lt = i2c_get_clientdata(client);
+ 
++	devm_release_action(lt->dev, lt8912_detach_dsi, lt->dsi);
+ 	drm_bridge_remove(&lt->bridge);
+ 	lt8912_free_i2c(lt);
+ 	lt8912_put_dt(lt);
+@@ -825,7 +879,6 @@
+ 	.driver = {
+ 		.name = "lt8912",
+ 		.of_match_table = lt8912_dt_match,
+-		.pm = pm_sleep_ptr(&lt8912_bridge_pm_ops),
+ 	},
+ 	.probe = lt8912_probe,
+ 	.remove = lt8912_remove,
+--- /dev/null
++++ b/include/drm/bridge/lt8912b.h
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef DRM_LT8912B_PIPELINE_H
++#define DRM_LT8912B_PIPELINE_H
++struct drm_bridge;
++/* Caller serializes the entire chain and unbind. First error is sticky until
++ * a fully stopped retry; no software status constitutes measured output.
++ */
++struct lt8912b_pipeline {
++	int error;
++	const char *stage;
++	bool host_prepared, host_started, prepared, started, supplies_owned;
++};
++static inline void lt8912b_pipeline_error(struct lt8912b_pipeline *p, const char *stage, int error)
++{
++	if (p && error && !p->error) {
++		p->error = error;
++		p->stage = stage;
++	}
++}
++void lt8912b_pipeline_bind(struct drm_bridge *bridge, struct lt8912b_pipeline *pipeline);
++#endif
+--- a/drivers/clk/sophgo/clk-cv1800.c
++++ b/drivers/clk/sophgo/clk-cv1800.c
+@@ -56,20 +56,66 @@
+ static CV1800_INTEGRAL_PLL(clk_fpll, osc_parents,
+ 			   REG_FPLL_CSR,
+ 			   REG_PLL_G6_CTRL, 8,
+-			   REG_PLL_G6_STATUS, 2,
++			   REG_PLL_G6_STATUS, 18,
+ 			   pll_limits,
+ 			   CLK_IS_CRITICAL);
+ 
+ static CV1800_INTEGRAL_PLL(clk_mipimpll, osc_parents,
+ 			   REG_MIPIMPLL_CSR,
+ 			   REG_PLL_G2_CTRL, 0,
+-			   REG_PLL_G2_STATUS, 0,
++			   REG_PLL_G2_STATUS, 16,
+ 			   pll_limits,
+ 			   CLK_IS_CRITICAL);
+ 
+ static const struct clk_parent_data clk_mipimpll_parents[] = {
+ 	{ .hw = &clk_mipimpll.common.hw },
+ };
++
++/*
++ * SG2000 TRM v1.0 pll_g2_ssc_syn_ctrl (0x840): bit 1 enables the DSI PHY
++ * synthesizer source from MIPIMPLL; bit 0 selects the shared half (450 MHz)
++ * or full (900 MHz) reference for every G2 synthesizer and is only read here.
++ */
++static struct cv1800_clk_regbit clk_dsi_synth_src_gate =
++	CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 1);
++
++static int clk_dsi_synth_src_enable(struct clk_hw *hw)
++{
++	cv1800_clk_setbit(hw_to_cv1800_clk_common(hw), &clk_dsi_synth_src_gate);
++	return 0;
++}
++
++static void clk_dsi_synth_src_disable(struct clk_hw *hw)
++{
++	cv1800_clk_clearbit(hw_to_cv1800_clk_common(hw), &clk_dsi_synth_src_gate);
++}
++
++static int clk_dsi_synth_src_is_enabled(struct clk_hw *hw)
++{
++	return cv1800_clk_checkbit(hw_to_cv1800_clk_common(hw), &clk_dsi_synth_src_gate);
++}
++
++static unsigned long clk_dsi_synth_src_recalc_rate(struct clk_hw *hw,
++						   unsigned long parent_rate)
++{
++	struct cv1800_clk_common *common = hw_to_cv1800_clk_common(hw);
++
++	return readl(common->base + REG_PLL_G2_SSC_SYN_CTRL) & BIT(0) ?
++	       parent_rate : parent_rate / 2;
++}
++
++static const struct clk_ops clk_dsi_synth_src_ops = {
++	.enable = clk_dsi_synth_src_enable,
++	.disable = clk_dsi_synth_src_disable,
++	.is_enabled = clk_dsi_synth_src_is_enabled,
++	.recalc_rate = clk_dsi_synth_src_recalc_rate,
++};
++
++/* Firmware's gate state is kept until a consumer takes it; no rate propagation. */
++static struct cv1800_clk_common clk_dsi_synth_src =
++	CV1800_CLK_COMMON("clk_dsi_synth_src", clk_mipimpll_parents,
++			  &clk_dsi_synth_src_ops,
++			  CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED);
+ static const struct clk_parent_data clk_bypass_mipimpll_parents[] = {
+ 	{ .index = 0 },
+ 	{ .hw = &clk_mipimpll.common.hw },
+@@ -88,7 +134,7 @@
+ static CV1800_FACTIONAL_PLL(clk_mpll, clk_bypass_mipimpll_parents,
+ 			    REG_MPLL_CSR,
+ 			    REG_PLL_G6_CTRL, 0,
+-			    REG_PLL_G6_STATUS, 0,
++			    REG_PLL_G6_STATUS, 16,
+ 			    pll_limits,
+ 			    &clk_mpll_synthesizer,
+ 			    CLK_IS_CRITICAL);
+@@ -102,7 +148,7 @@
+ static CV1800_FACTIONAL_PLL(clk_tpll, clk_bypass_mipimpll_parents,
+ 			    REG_TPLL_CSR,
+ 			    REG_PLL_G6_CTRL, 4,
+-			    REG_PLL_G6_STATUS, 1,
++			    REG_PLL_G6_STATUS, 17,
+ 			    pll_limits,
+ 			    &clk_tpll_synthesizer,
+ 			    CLK_IS_CRITICAL);
+@@ -116,12 +162,13 @@
+ static CV1800_FACTIONAL_PLL(clk_a0pll, clk_bypass_mipimpll_parents,
+ 			    REG_A0PLL_CSR,
+ 			    REG_PLL_G2_CTRL, 4,
+-			    REG_PLL_G2_STATUS, 1,
++			    REG_PLL_G2_STATUS, 17,
+ 			    pll_limits,
+ 			    &clk_a0pll_synthesizer,
+ 			    CLK_IS_CRITICAL);
+ 
+ static struct cv1800_clk_pll_synthesizer clk_disppll_synthesizer = {
++	.report_lock	= true,
+ 	.en		= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 3),
+ 	.clk_half	= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 0),
+ 	.ctrl		= REG_DISPPLL_SSC_SYN_CTRL,
+@@ -130,10 +177,10 @@
+ static CV1800_FACTIONAL_PLL(clk_disppll, clk_bypass_mipimpll_parents,
+ 			    REG_DISPPLL_CSR,
+ 			    REG_PLL_G2_CTRL, 8,
+-			    REG_PLL_G2_STATUS, 2,
++			    REG_PLL_G2_STATUS, 18,
+ 			    pll_limits,
+ 			    &clk_disppll_synthesizer,
+-			    CLK_IS_CRITICAL);
++			    CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
+ 
+ static struct cv1800_clk_pll_synthesizer clk_cam0pll_synthesizer = {
+ 	.en		= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 4),
+@@ -144,7 +191,7 @@
+ static CV1800_FACTIONAL_PLL(clk_cam0pll, clk_bypass_mipimpll_parents,
+ 			    REG_CAM0PLL_CSR,
+ 			    REG_PLL_G2_CTRL, 12,
+-			    REG_PLL_G2_STATUS, 3,
++			    REG_PLL_G2_STATUS, 19,
+ 			    pll_limits,
+ 			    &clk_cam0pll_synthesizer,
+ 			    CLK_IGNORE_UNUSED);
+@@ -158,7 +205,7 @@
+ static CV1800_FACTIONAL_PLL(clk_cam1pll, clk_bypass_mipimpll_parents,
+ 			    REG_CAM1PLL_CSR,
+ 			    REG_PLL_G2_CTRL, 16,
+-			    REG_PLL_G2_STATUS, 4,
++			    REG_PLL_G2_STATUS, 20,
+ 			    pll_limits,
+ 			    &clk_cam1pll_synthesizer,
+ 			    CLK_IS_CRITICAL);
+@@ -1261,6 +1308,7 @@
+ 		[CLK_MIPIMPLL]		= &clk_mipimpll.common.hw,
+ 		[CLK_A0PLL]		= &clk_a0pll.common.hw,
+ 		[CLK_DISPPLL]		= &clk_disppll.common.hw,
++		[CLK_DSI_SYNTH_SRC]	= &clk_dsi_synth_src.hw,
+ 		[CLK_CAM0PLL]		= &clk_cam0pll.common.hw,
+ 		[CLK_CAM1PLL]		= &clk_cam1pll.common.hw,
+ 
+--- a/drivers/clk/sophgo/clk-cv1800.h
++++ b/drivers/clk/sophgo/clk-cv1800.h
+@@ -9,7 +9,7 @@
+ #include <dt-bindings/clock/sophgo,cv1800.h>
+ 
+ #define CV1800_CLK_MAX			(CLK_XTAL_AP + 1)
+-#define CV1810_CLK_MAX			(CLK_DISP_SRC_VIP + 1)
++#define CV1810_CLK_MAX			(CLK_DSI_SYNTH_SRC + 1)
+ 
+ #define REG_PLL_G2_CTRL			0x800
+ #define REG_PLL_G2_STATUS		0x804
+--- a/drivers/clk/sophgo/clk-cv18xx-pll.c
++++ b/drivers/clk/sophgo/clk-cv18xx-pll.c
+@@ -225,6 +225,21 @@
+ 	bool clk_full;
+ 	u32 syn_set;
+ 
++	/*
++	 * A consumer polling clk_get_rate() for readiness must see zero,
++	 * the clk_get_rate() error value, while the PLL is powered down,
++	 * unlocked or still updating. Opt-in per PLL, uncached through
++	 * CLK_GET_RATE_NOCACHE on the descriptor.
++	 */
++	if (pll->pll_syn->report_lock) {
++		u32 mask = BIT(pll->pll_status.shift);
++		u32 status = readl(pll->common.base + pll->pll_status.reg);
++
++		if (cv1800_clk_checkbit(&pll->common, &pll->pll_pwd) ||
++		    !(status & mask) || (status & (mask >> 16)))
++			return 0;
++	}
++
+ 	if (!fpll_is_factional_mode(pll))
+ 		return ipll_recalc_rate(hw, parent_rate);
+ 
+--- a/drivers/clk/sophgo/clk-cv18xx-pll.h
++++ b/drivers/clk/sophgo/clk-cv18xx-pll.h
+@@ -27,6 +27,7 @@
+ struct cv1800_clk_pll_synthesizer {
+ 	struct cv1800_clk_regbit	en;
+ 	struct cv1800_clk_regbit	clk_half;
++	bool				report_lock;
+ 	u32				ctrl;
+ 	u32				set;
+ };
+--- a/include/dt-bindings/clock/sophgo,cv1800.h
++++ b/include/dt-bindings/clock/sophgo,cv1800.h
+@@ -172,5 +172,6 @@
+ 
+ // Only for CV181x
+ #define CLK_DISP_SRC_VIP		161
++#define CLK_DSI_SYNTH_SRC		162
+ 
+ #endif /* __DT_BINDINGS_SOPHGO_CV1800_CLK_H__ */

@@ -36,3 +36,8 @@ This README is still very TODO, since this is the first release after DEF CON.
   Yes, really, this is not a joke.
 - Connect over serial (115200/8n1)
 - Run `nix-badge` to control the badge once it's booted
+
+## Experimental RISC-V display bring-up
+
+See the [build and smoke-test guide](docs/mainline-display.md). This opt-in
+path produces a warm-boot pinstripe; framebuffer scanout is not implemented.

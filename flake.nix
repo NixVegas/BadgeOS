@@ -70,7 +70,11 @@
       ];
 
       mkDuoS =
-        { core, buildPlatform }:
+        {
+          core,
+          buildPlatform,
+          pinstripe ? false,
+        }:
         nixpkgs-2605.lib.nixosSystem {
           modules = [
             {
@@ -87,7 +91,8 @@
             ./modules/duo-s/bootswap.nix
             ./modules/duo-s/deploy.nix
             ./modules/duo-s/core-${core}.nix
-          ];
+          ]
+          ++ duosLib.optional pinstripe ./modules/duo-s/mainline-pinstripe.nix;
         };
 
       # All sensible (core, buildPlatform) pairs for one core. We keep the
@@ -173,7 +178,13 @@
         versionTemplate = "2.0-<lastModifiedDate>-<rev>";
 
         # badgeOS NixOS systems (built against nixpkgs 26.05).
-        nixosConfigurations = duosNixosConfigurations;
+        nixosConfigurations = duosNixosConfigurations // {
+          duo-s-riscv-pinstripe-x86_64 = mkDuoS {
+            core = "riscv";
+            buildPlatform = "x86_64-linux";
+            pinstripe = true;
+          };
+        };
 
         # deploy-rs: two nodes, one per core, both reaching the same badge (only
         # one core is booted at a time). Deploy the node matching the CURRENTLY

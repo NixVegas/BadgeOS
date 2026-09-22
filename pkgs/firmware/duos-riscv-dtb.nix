@@ -15,10 +15,14 @@
 #
 # Output layout: $out/sophgo/sg2000-milkv-duo-s.dtb
 # -> hardware.deviceTree.name = "sophgo/sg2000-milkv-duo-s.dtb"
-{ pkgs, kernel }:
+{
+  pkgs,
+  kernel,
+  pinstripe ? false,
+}:
 let
   dtsDir = ./dts;
-  dts = "${dtsDir}/sg2000-milkv-duo-s-riscv.dts";
+  dts = "${dtsDir}/sg2000-milkv-duo-s-${if pinstripe then "pinstripe" else "riscv"}.dts";
   # Build the DTB from a POST-PATCHED kernel tree. kernel.src is the raw upstream
   # tarball, but the mainline 7.2 sophgo dtsi our board DTS #includes (sg2002.dtsi
   # -> cv180x.dtsi) lacks the SoC peripheral nodes (thermal, pwm, efuse, mailbox,
@@ -30,7 +34,9 @@ let
   patchedSrc = pkgs.applyPatches {
     name = "linux-${kernel.version}-sophgo-dts-patched";
     src = kernel.src;
-    patches = import ../kernel/patches/armbian/dts-patches.nix;
+    patches =
+      (import ../kernel/patches/armbian/dts-patches.nix)
+      ++ pkgs.lib.optional pinstripe ../kernel/patches/sg2000-display.patch;
   };
 in
 pkgs.stdenvNoCC.mkDerivation {
@@ -39,7 +45,10 @@ pkgs.stdenvNoCC.mkDerivation {
 
   src = patchedSrc;
 
-  nativeBuildInputs = [ pkgs.buildPackages.buildPackages.gcc pkgs.buildPackages.buildPackages.dtc ];
+  nativeBuildInputs = [
+    pkgs.buildPackages.buildPackages.gcc
+    pkgs.buildPackages.buildPackages.dtc
+  ];
 
   dontConfigure = true;
 
