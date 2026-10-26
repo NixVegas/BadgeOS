@@ -1,0 +1,130 @@
+# Make deploy-rs (and a manual on-device nixos-rebuild) safe on the dual-core
+# badge. See flake.nix `deploy.nodes` for the two targets, one per core.
+#
+# The badge's FAT boot partition is NOT a stock NixOS /boot. It holds a per-core
+# tree built off-device by pkgs/sdcard/make-boot-dir.nix:
+#   /fip.bin /fip-arm.bin /fip-riscv.bin
+#   /arm/nixos/... /arm/extlinux/extlinux.conf
+#   /riscv/nixos/... /riscv/extlinux/extlinux.conf
+# Each core's U-Boot reads its OWN /<core>/extlinux/extlinux.conf; only fip.bin
+# selects the core. The stock generic-extlinux-compatible installer writes
+# generations to the /boot ROOT with ../nixos/ paths, which clobbers this layout
+# and leaves the board unbootable.
+#
+# So override the installer to update ONLY the running core's subtree (kernel +
+# extlinux) and its firmware, never the other core's subtree. Firmware is the
+# active polyglot fip.bin (#48; boots either core, always refreshed) plus this
+# core's recovery fip-<core>.bin. Core switching is latch-only (nix-badge core
+# + reboot in AUTO) -- fip.bin is core-agnostic now. The image build is
+# unaffected: make-boot-dir.nix calls populateCmd directly, not this installer.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+let
+  # Baked per system: the arm closure installs into /arm, the riscv one into /riscv.
+  core = if pkgs.stdenv.hostPlatform.isAarch64 then "arm" else "riscv";
+
+  # The deployed core's SPLIT fip (vendor FSBL + monitor + U-Boot), kept on /boot
+  # as a known-good RECOVERY blob (#48). Same derivation make-boot-dir.nix bakes
+  # in. Built on the build host.
+  fipCore = import ../../pkgs/firmware/fip.nix {
+    pkgs = pkgs.buildPackages;
+    inherit core;
+  };
+  # The POLYGLOT fip (#48): the ACTIVE fip.bin the BootROM reads. One image boots
+  # EITHER core by the GPIO_RTX strap, so it is core-agnostic -- a deploy always
+  # refreshes fip.bin to it regardless of which core is being deployed. Threading
+  # it here lets FSBL/u-boot/fip changes (e.g. the 1050MHz overdrive) land without
+  # an SD reflash. Boot-critical, so the installer writes it atomically (below).
+  fipPolyglot = import ../../pkgs/firmware/fip-polyglot.nix {
+    pkgs = pkgs.buildPackages;
+  };
+
+  # config.boot.loader.generic-extlinux-compatible.populateCmd is built against
+  # pkgs.buildPackages (the BUILD arch) because upstream means it to run at
+  # image-build time on the build host. Our installer below runs at ACTIVATION
+  # time ON THE BADGE, and these systems cross-compile on an x86_64 host, so
+  # populateCmd's x86_64 coreutils/gnused die there with "cannot execute binary
+  # file: Exec format error" and leave the boot tree half-written. Rebuild the
+  # very same extlinux-conf-builder against the TARGET pkgs so it runs on the
+  # badge, and mirror nixpkgs' own builderArgs (module default.nix) so the output
+  # matches the stock installer exactly.
+  blCfg = config.boot.loader;
+  dtCfg = config.hardware.deviceTree;
+  efg = blCfg.generic-extlinux-compatible;
+  timeoutStr = if blCfg.timeout == null then "-1" else toString blCfg.timeout;
+  targetBuilder =
+    import "${pkgs.path}/nixos/modules/system/boot/loader/generic-extlinux-compatible/extlinux-conf-builder.nix"
+      {
+        inherit lib pkgs;
+      };
+  builderArgs =
+    "-g ${toString efg.configurationLimit} -t ${timeoutStr}"
+    + lib.optionalString (dtCfg.name != null) " -n ${dtCfg.name}"
+    + lib.optionalString (!efg.useGenerationDeviceTree) " -r";
+  targetPopulateCmd = "${targetBuilder} ${builderArgs}";
+in
+{
+  # The 416 MB FAT is shared by both cores, and each generation is ~40 MB
+  # (kernel+initrd+dtb). Keep 2 per core: 3 filled the partition once failed
+  # deploys left orphaned kernels the pruner fell behind on, and the bootloader
+  # install writes the new kernel BEFORE pruning, so a full /boot dead-ends the
+  # deploy ("No space left / Failed to install bootloader"). 2 leaves headroom
+  # for the other core's tree + the fips. Also caps on-device installer pruning.
+  boot.loader.generic-extlinux-compatible.configurationLimit = 2;
+
+  # Dual-core-aware bootloader install. switch-to-configuration calls this with
+  # the new system's toplevel as $1, exactly like the stock install-extlinux-conf.sh
+  # (which runs `populateCmd -c "$1" -d /boot`); we redirect it to the core subtree.
+  system.build.installBootLoader = lib.mkForce (
+    pkgs.writeShellScript "install-duos-bootloader" ''
+      set -euo pipefail
+      toplevel="$1"
+      dir="/boot/${core}"
+      # Populate the running core's subtree: adds this generation, prunes to the
+      # configurationLimit. (Firmware is handled separately below.)
+      ${targetPopulateCmd} -c "$toplevel" -d "$dir"
+      # U-Boot resolves LABEL paths from the FAT root, so rewrite the builder's
+      # relative ../nixos/ to absolute /${core}/nixos/ (as make-boot-dir.nix does).
+      ${pkgs.gnused}/bin/sed -i 's|\.\./nixos/|/${core}/nixos/|g' "$dir/extlinux/extlinux.conf"
+      echo "duos: installed the ${core} boot tree in $dir"
+
+      # Install firmware so FSBL/u-boot/fip changes ship on a deploy (not only an
+      # SD reflash). Two files (#48):
+      #   fip-${core}.bin  this core's SPLIT fip -- a known-good RECOVERY blob
+      #   fip.bin          the ACTIVE POLYGLOT fip the BootROM reads (boots either
+      #                    core by the strap; core-agnostic, so ALWAYS refreshed).
+      # The polyglot replaces the old per-core fip.bin + the wrong-fip/E:RESET
+      # guard: fip.bin now serves both cores, so there is no "pending swap" to
+      # preserve -- core-switch is latch-only (nix-badge core + reboot). Writes
+      # are atomic (tmp + sync + mv): a half-written fip.bin bricks the BootROM.
+      # Recovery if fip.bin is ever lost/bad: cp fip-${core}.bin fip.bin.
+      newfipcore="${fipCore}"
+      if ! cmp -s "$newfipcore" "/boot/fip-${core}.bin" 2>/dev/null; then
+        cp "$newfipcore" "/boot/fip-${core}.bin.new" && sync && mv "/boot/fip-${core}.bin.new" "/boot/fip-${core}.bin" && sync
+        echo "duos: updated recovery /boot/fip-${core}.bin"
+      fi
+      newpoly="${fipPolyglot}"
+      if ! cmp -s "$newpoly" /boot/fip.bin 2>/dev/null; then
+        cp "$newpoly" /boot/fip.bin.new && sync && mv /boot/fip.bin.new /boot/fip.bin && sync
+        echo "duos: refreshed active polyglot /boot/fip.bin -- new firmware on next reboot"
+      fi
+    ''
+  );
+
+  # deploy-rs activates as root over SSH via sudo, non-interactively. The badge
+  # user is in wheel; allow it to sudo without a password so a deploy does not
+  # hang on a prompt. This is a dev badge; pair it with SSH key auth (add your
+  # pubkey to users.users.badge.openssh.authorizedKeys) rather than relying on the
+  # weak console password over the network.
+  security.sudo.wheelNeedsPassword = false;
+
+  # deploy-rs pushes the closure with `nix copy` as the SSH user (badge), whose
+  # nix-daemon otherwise rejects the locally-built, unsigned paths with "lacks a
+  # signature by a trusted key". Trust the wheel group so the copy is accepted
+  # without needing the dev host's paths signed.
+  nix.settings.trusted-users = [ "@wheel" ];
+}

@@ -1,0 +1,32 @@
+.{
+    .name = .nix_badge,
+    .version = "0.1.0",
+    .fingerprint = 0xa7816e666915eda4,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "backend.zig",
+        "bled.zig",
+        "config.zig",
+        "eval.zig",
+        "fixeval.zig",
+        "nix-badge.zig",
+        "nixeval.zig",
+        "oled.zig",
+        "screens.zig",
+        "sysfs.zig",
+        "ws2812.zig",
+        "fix-stub",
+    },
+    .dependencies = .{
+        // psyclyx/fix supplies the `expr` evaluator. build.zig patches the fetched
+        // source before it builds it: the fetch-less fetcher stubs replace the
+        // network fetchers, and `fix-stub/*.patch` add the native apply entry
+        // points, the collector fixes, and riscv64 fiber support. See `patchedFix`.
+        .fix = .{
+            .url = "git+https://github.com/psyclyx/fix#2b23db57bfe4e1ae498ca4f841358a5c52752699",
+            .hash = "fix-0.3.0-2pqVLH9zVwCfP-hNCz7sf9FvDKAZIb7Cswq1FjZIrTlY",
+        },
+    },
+}

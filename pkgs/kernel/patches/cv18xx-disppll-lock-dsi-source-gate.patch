@@ -1,0 +1,145 @@
+--- a/drivers/clk/sophgo/clk-cv1800.c
++++ b/drivers/clk/sophgo/clk-cv1800.c
+@@ -70,6 +70,55 @@
+ static const struct clk_parent_data clk_mipimpll_parents[] = {
+ 	{ .hw = &clk_mipimpll.common.hw },
+ };
++
++/*
++ * NixVegas badge: the DSI PHY synthesizer source gate. SG2000 TRM v1.0
++ * (sophgo/sophgo-doc 370d81b, SG200X/TRM/contents/cn/clock/
++ * pll_g2_registers_description.table.rst): 0x840 bit 1 is
++ * reg_dsi_ssc_syn_src_en; bit 0 selects the shared MIPIMPLL synthesizer
++ * reference (0: half, 1: full rate). Firmware's setting stands until a
++ * consumer takes the gate, and no CLK_SET_RATE_PARENT retunes MIPIMPLL.
++ */
++static struct cv1800_clk_regbit dsi_src_gate =
++	CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 1);
++
++static int dsi_src_enable(struct clk_hw *hw)
++{
++	cv1800_clk_setbit(hw_to_cv1800_clk_common(hw), &dsi_src_gate);
++	return 0;
++}
++
++static void dsi_src_disable(struct clk_hw *hw)
++{
++	cv1800_clk_clearbit(hw_to_cv1800_clk_common(hw), &dsi_src_gate);
++}
++
++static int dsi_src_is_enabled(struct clk_hw *hw)
++{
++	return cv1800_clk_checkbit(hw_to_cv1800_clk_common(hw), &dsi_src_gate);
++}
++
++static unsigned long dsi_src_recalc_rate(struct clk_hw *hw,
++					 unsigned long parent_rate)
++{
++	struct cv1800_clk_common *common = hw_to_cv1800_clk_common(hw);
++
++	return readl(common->base + REG_PLL_G2_SSC_SYN_CTRL) & BIT(0) ?
++	       parent_rate : parent_rate / 2;
++}
++
++static const struct clk_ops cv1800_dsi_src_ops = {
++	.enable = dsi_src_enable,
++	.disable = dsi_src_disable,
++	.is_enabled = dsi_src_is_enabled,
++	.recalc_rate = dsi_src_recalc_rate,
++};
++
++static struct cv1800_clk_common clk_dsi_synth_src =
++	CV1800_CLK_COMMON("clk_dsi_synth_src", clk_mipimpll_parents,
++			  &cv1800_dsi_src_ops,
++			  CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED);
++
+ static const struct clk_parent_data clk_bypass_mipimpll_parents[] = {
+ 	{ .index = 0 },
+ 	{ .hw = &clk_mipimpll.common.hw },
+@@ -122,18 +171,22 @@
+ 			    CLK_IS_CRITICAL);
+ 
+ static struct cv1800_clk_pll_synthesizer clk_disppll_synthesizer = {
++	.report_lock	= true,
+ 	.en		= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 3),
+ 	.clk_half	= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 0),
+ 	.ctrl		= REG_DISPPLL_SSC_SYN_CTRL,
+ 	.set		= REG_DISPPLL_SSC_SYN_SET,
+ };
++/* NixVegas badge: in the same TRM table PLL_G2_STATUS bit 18 is DISPPLL's
++ * lock bit; bit 2 is its "updating" bit.
++ */
+ static CV1800_FACTIONAL_PLL(clk_disppll, clk_bypass_mipimpll_parents,
+ 			    REG_DISPPLL_CSR,
+ 			    REG_PLL_G2_CTRL, 8,
+-			    REG_PLL_G2_STATUS, 2,
++			    REG_PLL_G2_STATUS, 18,
+ 			    pll_limits,
+ 			    &clk_disppll_synthesizer,
+-			    CLK_IS_CRITICAL);
++			    CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE);
+ 
+ static struct cv1800_clk_pll_synthesizer clk_cam0pll_synthesizer = {
+ 	.en		= CV1800_CLK_BIT(REG_PLL_G2_SSC_SYN_CTRL, 4),
+@@ -1261,6 +1314,7 @@
+ 		[CLK_MIPIMPLL]		= &clk_mipimpll.common.hw,
+ 		[CLK_A0PLL]		= &clk_a0pll.common.hw,
+ 		[CLK_DISPPLL]		= &clk_disppll.common.hw,
++		[CLK_DSI_SYNTH_SRC]	= &clk_dsi_synth_src.hw,
+ 		[CLK_CAM0PLL]		= &clk_cam0pll.common.hw,
+ 		[CLK_CAM1PLL]		= &clk_cam1pll.common.hw,
+ 
+--- a/drivers/clk/sophgo/clk-cv1800.h
++++ b/drivers/clk/sophgo/clk-cv1800.h
+@@ -9,7 +9,7 @@
+ #include <dt-bindings/clock/sophgo,cv1800.h>
+ 
+ #define CV1800_CLK_MAX			(CLK_XTAL_AP + 1)
+-#define CV1810_CLK_MAX			(CLK_DISP_SRC_VIP + 1)
++#define CV1810_CLK_MAX			(CLK_DSI_SYNTH_SRC + 1)
+ 
+ #define REG_PLL_G2_CTRL			0x800
+ #define REG_PLL_G2_STATUS		0x804
+--- a/drivers/clk/sophgo/clk-cv18xx-pll.c
++++ b/drivers/clk/sophgo/clk-cv18xx-pll.c
+@@ -225,6 +225,21 @@
+ 	bool clk_full;
+ 	u32 syn_set;
+ 
++	/*
++	 * NixVegas badge: with report_lock (DISPPLL) the rate reads 0, the
++	 * clk_get_rate() error value, while powered down, unlocked or
++	 * updating; with CLK_GET_RATE_NOCACHE a consumer polls it for lock,
++	 * since CCF drops set_rate errors.
++	 */
++	if (pll->pll_syn->report_lock) {
++		u32 mask = BIT(pll->pll_status.shift);
++		u32 status = readl(pll->common.base + pll->pll_status.reg);
++
++		if (cv1800_clk_checkbit(&pll->common, &pll->pll_pwd) ||
++		    !(status & mask) || (status & (mask >> 16)))
++			return 0;
++	}
++
+ 	if (!fpll_is_factional_mode(pll))
+ 		return ipll_recalc_rate(hw, parent_rate);
+ 
+--- a/drivers/clk/sophgo/clk-cv18xx-pll.h
++++ b/drivers/clk/sophgo/clk-cv18xx-pll.h
+@@ -27,6 +27,7 @@
+ struct cv1800_clk_pll_synthesizer {
+ 	struct cv1800_clk_regbit	en;
+ 	struct cv1800_clk_regbit	clk_half;
++	bool				report_lock;
+ 	u32				ctrl;
+ 	u32				set;
+ };
+--- a/include/dt-bindings/clock/sophgo,cv1800.h
++++ b/include/dt-bindings/clock/sophgo,cv1800.h
+@@ -172,5 +172,6 @@
+ 
+ // Only for CV181x
+ #define CLK_DISP_SRC_VIP		161
++#define CLK_DSI_SYNTH_SRC		162
+ 
+ #endif /* __DT_BINDINGS_SOPHGO_CV1800_CLK_H__ */

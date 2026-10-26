@@ -13,7 +13,7 @@ This README is still very TODO, since this is the first release after DEF CON.
 - 24 WS2812 LEDs on SPI3, powered from VSEL rather than the 3.3V buck (deliberately go red glitch-art on low battery)
 - AIC8800 WiFi (kernel driver needs a rebase from 5.10; we have the bootrom)
 - 0.5 TOPS TPU (works under Debian; drivers need forward-porting)
-- DSI → HDMI out via an [Olimex-based](https://github.com/OLIMEX/MIPI-HDMI) bridge (needs a DSI kernel driver)
+- DSI → HDMI out via an [Olimex-based](https://github.com/OLIMEX/MIPI-HDMI) bridge: 1280x720 console and framebuffer, see [docs/hdmi.md](docs/hdmi.md)
 - USB-C with mode switching
 - Serial + JTAG over the CH347
 - 10/100 Ethernet

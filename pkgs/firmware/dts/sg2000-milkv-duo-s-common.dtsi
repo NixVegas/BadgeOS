@@ -1,0 +1,498 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Shared board nodes common to both the ARM and RISC-V Milk-V Duo S cores.
+ *
+ * These nodes are SoC-pad-level and identical between the two cores, so they
+ * live here instead of being duplicated in each DTS. Each core still defines
+ * its own sdhci1_cfg pinctrl (PIN_SD1_* on ARM, DUOS_SD1_* on RISC-V) and its
+ * own gpio-line-names.
+ *
+ * This dtsi is included after the base dtsi (module-01 on ARM, sg2002 on RISC-V)
+ * and <dt-bindings/gpio/gpio.h>, so CLK_SD1, CLK_AXI4_SD1, GPIO_ACTIVE_HIGH and
+ * the &clk / &porta / &sdhci1 / &sdhci1_cfg labels are already in scope. Label
+ * references resolve globally at dtc time, so include order does not matter for
+ * the &sdhci1_cfg reference.
+ */
+
+/*
+ * Onboard WiFi: AICSemi AIC8800 on the SDIO bus mmc@4320000 (label sdhci1).
+ * mmc@4310000 = SD card (sdhci0), mmc@4300000 = eMMC. GPIO PORTA pin 15
+ * (WL_REG_ON, active-high) powers the AIC8800, driven via the cvi host's
+ * poweron-gpios. The out-of-tree aic8800 driver and firmware are separate.
+ */
+/ {
+	/* WL_REG_ON must have one consumer. The cvitek host drives it via &sdhci1
+	 * poweron-gpios. An mmc-pwrseq node on the same porta15 line would add a
+	 * second consumer, which forces the kernel's can_sleep gpio-shared-proxy.
+	 * aicbsp_set_subsys then calls the non-sleeping gpiod_set_value() on that
+	 * proxy (gpiolib.c warns to use gpiod_set_value_cansleep) and mis-sequences
+	 * the WL_REG_ON power enable. With one consumer, porta15 is a direct,
+	 * non-sleeping gpiochip0 line and the power toggle is clean. */
+
+	/* The AIC8800 core VDD reports a 3.3V OCR window in CMD5, so the mmc core
+	 * must see vmmc as 3.3V or it rejects the card ("no support for card's
+	 * volts", -EINVAL) before it powers. The bus I/O is taken to 1.8V in
+	 * hardware by the cv18xx-vsw driver patch (SD_PWRSW_CTRL) under NO_1_8_V,
+	 * matching the vendor, so there is no 1.8V vqmmc regulator. */
+	wifi_vdd: regulator-wifi-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "aic8800-vdd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&sdhci1 {
+	/* This config routes the AIC8800 in-band SDIO interrupt (CARD_INT on DAT1)
+	 * through the stock sdhci sdio_claim_irq path. With cap-sdio-irq and the
+	 * driver claiming the IRQ, stock sdhci enables SDHCI_INT_CARD_INT and pins
+	 * the controller runtime-resumed (pm_runtime_get_noresume in
+	 * sdhci_enable_sdio_irq). The card clock then keeps toggling during the idle
+	 * post-START_APP wait, so the fmac confirmation interrupt is sensed. */
+	status = "okay";
+	/* Marks this as the SD1/SDIO (wifi) instance for the cv18xx-vsw kernel
+	 * patch. Its cv18xx_init sets FLAG_CV18XX_SD1 (reg_0x200[16] instance
+	 * select and [8]/[9] reset-out in cv18xx_sdhci_reset) and FLAG_IO_FIXED_1V8
+	 * (forces true 1.8V signalling). Without this the patched glue treats the
+	 * node like an SD card and the SDIO-specific bring-up does not run. */
+	sophgo,sdio-inst1;
+	/* Binds the out-of-tree cvitek cv181x SDHCI host driver
+	 * (pkgs/firmware/sdhci-cv181x) instead of mainline sdhci-of-dwcmshc, to
+	 * reproduce the vendor SDIO bring-up the AIC8800 fmac needs. Replaces the
+	 * inherited "sophgo,cv1800b-dwcmshc" compatible. clk_wifisd = SD1
+	 * functional clock (driver sets it to max-frequency); axi = register-bus
+	 * clock. */
+	compatible = "cvitek,cv181x-sdio";
+	/* List the functional clock (CLK_SD1, 375MHz) first, so sdhci_pltfm_init
+	 * picks it (clocks[0], devm_clk_get(NULL)) as host->max_clk. With axi first
+	 * the divider runs off 300MHz for a 37.5MHz card clock instead of the
+	 * required 46.875MHz (375/8). The driver also looks both clocks up by name,
+	 * so the order is safe. */
+	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
+	clock-names = "clk_wifisd", "axi";
+	bus-width = <4>;
+	non-removable;
+	no-mmc;
+	no-sd;
+	/* The CONFIG_OOB=n driver needs the in-band SDIO interrupt. mmc_of_parse
+	 * maps this to MMC_CAP_SDIO_IRQ, so sdhci wires up SDHCI_INT_CARD_INT. */
+	cap-sdio-irq;
+	/* Keep the SDIO function powered and stop the controller idling away the
+	 * clock across the post-jump wait. */
+	keep-power-in-suspend;
+	/* Match the vendor 375MHz SDIO source clock (CLK_SD1 = clk_wifisd). The
+	 * bootrom-to-fmac handoff and the cv18xx PHY tap timing are calibrated for
+	 * a 375MHz functional clock. The vendor host reads this property
+	 * (src-frequency) for the source rate, decoupled from max-frequency (the
+	 * bus-clock ceiling). */
+	src-frequency = <375000000>;
+	/* The cv181x host's get_max_clock op returns f_max (this max-frequency) as
+	 * sdhci's divider base (SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN), so the
+	 * high-speed card clock is f_max/4. 187.5MHz gives 46.875MHz, which the
+	 * fixed cv18xx PHY tap sample point requires. A lower rate shifts the sample
+	 * point and corrupts the post-jump firmware message DMA. */
+	max-frequency = <187500000>;
+	/* The card core VDD OCR window is 3.3V (see wifi_vdd). The 1.8V bus I/O is
+	 * done in hardware at the SoC pad rail by the cv18xx-vsw patch under
+	 * NO_1_8_V, so there is no vqmmc regulator. A 1.8V vqmmc would pin ocr_avail
+	 * to 1.8V and the core would reject the card's 3.3V OCR. */
+	vmmc-supply = <&wifi_vdd>;
+	pinctrl-0 = <&sdhci1_cfg>;
+	pinctrl-names = "default";
+	/* Do not auto-power the card via mmc-pwrseq, which would raise WL_REG_ON at
+	 * boot and enumerate the card before the aic driver can drive it. Instead
+	 * hand WL_REG_ON to the cv181x host driver as poweron-gpios. The driver
+	 * drives it low at probe (card absent), then the aic CONFIG_PLATFORM_CVITEK
+	 * path raises it and calls cvi_sdio_rescan() to enumerate the fmac in
+	 * bootrom mode (CMD5 works). Its message task then starts and grants TX
+	 * credits. */
+	poweron-gpios = <&porta 15 GPIO_ACTIVE_HIGH>;
+};
+
+/*
+ * pstore/ramoops: a small DRAM region the kernel dumps oops/panic logs (and the
+ * console ring) into, so a crash survives a reboot and shows up in /sys/fs/pstore
+ * (#50). DRAM contents are NOT cleared by a warm reset on this SoC, so the region
+ * still holds the dying log when the kernel comes back up.
+ *
+ * Address 0x90000000 matches Armbian's validated placement (armbian/build#10326,
+ * patches 0056/0057) rather than a guessed gap. Both ends of DRAM are already
+ * spoken for: u-boot loads the kernel/dtb/initrd LOW (0x80200000..0x84000000) and
+ * relocates the dtb/initrd HIGH, just under the top of RAM; the C906L coprocessor
+ * region sits at 0x9fe00000 when that overlay is enabled. 0x90000000 is the clear
+ * middle -- nothing else claims it, and it is far enough below 0x9fe00000 that the
+ * C906L overlay cannot collide. (Our earlier 0x88000000 was never proven: the
+ * console region was never captured because PSTORE_CONSOLE was off -- now enabled
+ * in soc-features.nix -- so that address choice was untested rather than wrong.)
+ *
+ * no-map is deliberately ABSENT, as on most in-tree ramoops nodes: the region only
+ * has to be kept out of the page allocator. Left mapped, pfn_valid() holds and
+ * persistent_ram_buffer_map() takes the vmap path meant for ordinary DRAM instead
+ * of falling back to ioremap. Both cores use 1/1 address/size cells, so this
+ * shared node's reg is portable. PSTORE=y is in the kernel; PSTORE_RAM (=m) is
+ * loaded from the initrd (base.nix); PSTORE_CONSOLE/PSTORE_PMSG are enabled in
+ * soc-features.nix; panic=10 (soc-features.nix) reboots via the normal path.
+ */
+/ {
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		ramoops@90000000 {
+			compatible = "ramoops";
+			reg = <0x90000000 0x100000>;      /* 1 MB */
+			record-size = <0x00008000>;       /* 32 KB per oops/panic dump */
+			console-size = <0x00020000>;      /* 128 KB kernel-console ring */
+		};
+	};
+};
+
+/*
+ * SPI3 (DesignWare APB SSI) on the 40-pin header drives BOTH the WS2812 LED
+ * ring (/dev/spidev3.0) and the Sharp Memory Display (display@1) over ONE bus
+ * with the CS-AND-gate wiring: U10 gates LED_DIN = CS AND SDO, and the front
+ * connector routes the SAME CS net through an inverter to the display's SCS.
+ * The controller node itself (compatible/reg/#cells/clocks/interrupts/resets)
+ * comes from the base cv180x.dtsi (status="disabled"); this enables it and adds
+ * the two board devices. Identical on both cores, so it lives here.
+ *
+ * Per-core bits stay in each DTS: `dmas` (the cv1800b dmamux request's CPU
+ * cell, 0 = CA53 on ARM / 1 = C906 on RISC-V) and, on ARM only, the GIC-form
+ * `interrupts` override (the base's 2-cell PLIC form is wrong under the arm64
+ * GIC); plus the `spi3_cfg` pinctrl, whose pin-macro names differ (arm PIN_*
+ * vs riscv DUOS_*), referenced here by label. Requires RESET_SIMPLE in the
+ * kernel (shared, base.nix) so &rst binds and RST_SPI3 is deasserted -- without
+ * it the optional reset never releases and the bus comes up half-reset.
+ */
+&spi3 {
+	num-cs = <2>;
+	/* GPIO chip select, active-high. U10 passes LED data only while CS is
+	 * high; the native DW CS cannot do active-high (dw_spi_set_cs just sets
+	 * SER regardless of level), so use a gpiod CS -- dw_spi sets
+	 * SPI_CONTROLLER_GPIO_SS so SER is still raised and data flows. VIVO_D5 is
+	 * XGPIOB_16 at mux 3 (see each core's spi3_cfg). */
+	cs-gpios = <&portb 16 GPIO_ACTIVE_HIGH>;
+	pinctrl-0 = <&spi3_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	/* WS2812 ring at /dev/spidev3.0. spidev binds known compatibles only;
+	 * rohm,dh2228fv is in spidev_dt_ids. spi-cs-high is required for the U10
+	 * AND gate: gpiolib-of forces every SPI cs-gpio active-low unless the child
+	 * carries spi-cs-high (SPI children default to active-low chip selects). */
+	spidev@0 {
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		spi-cs-high;
+	};
+
+	/* Sharp Memory Display (LS027B7DH01, 400x240) as a DRM fbcon (#42). The
+	 * SAME CS net reaches SCS through an inverter, so this child has NO cs-gpios
+	 * (the controller's cs-gpios array has one entry; index 1 is NULL) and the
+	 * SPI core toggles nothing here -- the line sits where the LED cs-gpio
+	 * (spidev3.0) left it: LOW = display selected when the painter is idle.
+	 * EXTMODE strapped low => software VCOM (kthread toggles the in-band VCOM
+	 * bit, no EXTCOMIN pin); DISP tied high => no enable-gpios. */
+	display@1 {
+		compatible = "sharp,ls027b7dh01";
+		reg = <1>;
+		spi-max-frequency = <2000000>;
+		sharp,vcom-mode = "software";
+	};
+};
+
+/*
+ * SAO connector power hog. Lives in its own &portb block; dtc merges it with
+ * each core's &portb (which carries the core-specific gpio-line-names).
+ */
+&portb {
+	/* Enable the SAO connector power (U13 EN + U12 OE) at boot. */
+	sao-power-en-hog {
+		gpio-hog;
+		gpios = <21 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sao-power-en";
+	};
+};
+
+/*
+ * SARADC for the battery + rail voltage meters. The cv1800b-adc IIO driver
+ * exposes in_voltage0/1/2 (scale 3300/4096 = ~0.8057 mV per LSB). Channel map:
+ *   in_voltage0 = VSEL  (system rail, = VBUS through the TPS2116 mux; R16/R19),
+ *                       2.2M/1M divider -> read via the vsel-divider rescale
+ *   in_voltage1 = VBAT  (battery; R15 2.2M / R18 1M), divider -> vbat-divider
+ *   in_voltage2 = J6    (user ADC test point, NO divider) -> read the base
+ *                       channel directly: in_voltage2_raw * in_voltage_scale
+ * VSEL/VBAT need the divider because they exceed the 3.3V input; J6 does not.
+ * The base node (cv180x.dtsi) is status="disabled" with channel@0..2 declared.
+ */
+&saradc {
+	status = "okay";
+	/* Expose the ADC channels to in-kernel consumers (the iio-rescale below). */
+	#io-channel-cells = <1>;
+};
+
+/*
+ * VBAT as a standard Linux power_supply, to compare against nix-badge's
+ * per-badge VBUS auto-cal and decide fixed-factor-vs-cal. iio-rescale
+ * (voltage-divider) applies a FIXED factor to the VBAT SARADC channel;
+ * generic-adc-battery (adc-battery) then publishes it at
+ * /sys/class/power_supply/. The physical divider is 2.2M/1M (x3.2), but the
+ * ~138k leaky SARADC input loads it to an effective ~19.24, so output/full-ohms
+ * encode ~19.24 (a per-SoC approximation, NOT the real resistors). Compare
+ * voltage_now here to `nix-badge power` (which auto-cals per badge off the ~5V
+ * VBUS) to see how far a single fixed factor drifts across badges/temperature.
+ * Both cores get this via the shared dtsi. Drivers autoload (CONFIG_IIO_RESCALE,
+ * CONFIG_GENERIC_ADC_BATTERY are =m).
+ */
+/ {
+	/* VSEL and VBAT exceed the ADC's 3.3V input range, so each goes through a
+	 * 2.2M/1M divider; an iio-rescale presents the true rail voltage in sysfs
+	 * (raw*scale = real mV, effective ~19.24 after the leaky ADC input) so
+	 * userspace needs no hardcoded factor. `label` surfaces at
+	 * /sys/bus/iio/devices/iio:deviceN/label. VBAT additionally feeds an
+	 * adc-battery below for the power_supply %/status interface; VSEL is the
+	 * system rail (VBUS through the TPS2116 mux). J6 is a direct user ADC input
+	 * with NO divider -- read it straight from SARADC channel 2 (in_voltage2_raw
+	 * * in_voltage_scale), no rescale. */
+	vsel_scaled: vsel-divider {
+		compatible = "voltage-divider";
+		io-channels = <&saradc 0>; /* VSEL = SARADC channel 0 */
+		#io-channel-cells = <1>;
+		output-ohms = <1000>;
+		full-ohms = <19240>;
+		label = "vsel";
+	};
+
+	vbat_scaled: vbat-divider {
+		compatible = "voltage-divider";
+		io-channels = <&saradc 1>; /* VBAT = SARADC channel 1 */
+		#io-channel-cells = <1>;
+		output-ohms = <1000>;
+		full-ohms = <19240>; /* 19240/1000 = 19.24 effective factor */
+		label = "vbat";
+	};
+
+	badge_battery: badge-battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3000000>;
+		voltage-max-design-microvolt = <4200000>;
+	};
+
+	vbat_supply: vbat-adc-battery {
+		compatible = "adc-battery";
+		io-channels = <&vbat_scaled 0>;
+		io-channel-names = "voltage";
+		monitored-battery = <&badge_battery>;
+	};
+};
+
+/*
+ * SAO connector I2C = IIC1 (i2c@4010000) for the 128x32 SSD1306 OLED at 0x3c.
+ * The bling engine drives the panel from userspace over /dev/i2c-1 (i2c-dev),
+ * so we enable the controller but bind no in-kernel client (no ssd1306fb, which
+ * would claim 0x3c). The SAO SDA/SCL pads are PORTB 17/18 = PIN_VIVO_D4 /
+ * PIN_VIVO_D3; their IIC1 pinmux (i2c1_cfg) is added per-core once the mux value
+ * is confirmed (the arm vs riscv pin-macro names differ, like sdhci1_cfg). Until
+ * then the mux is set at runtime via `nix-badge mmio` while sweeping for 0x3c.
+ */
+/* Pin i2c@4010000 to /dev/i2c-1 deterministically (without an alias it takes the
+ * first free dynamic bus number -- i2c-0 here, since it is the only enabled i2c).
+ * The bling engine / `nix-badge oled` open /dev/i2c-1. */
+/ {
+	aliases {
+		i2c1 = &i2c1;
+		i2c2 = &i2c2; /* the LT8912B control bus: 2-0048 on both cores */
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	/* 400 kHz standard fast-mode. We tried 1 MHz fast-mode-plus for 60 fps Bad Apple
+	 * headroom, but (a) it gave no fps gain -- the delta player is fix-eval-bound at
+	 * ~46 fps, NOT I2C-bandwidth-bound, so a faster bus doesn't lift the ceiling --
+	 * and (b) it was marginal for the SAO wiring: single-byte i2cdetect still ACKs at
+	 * 1 MHz but the multi-byte SSD1306 init sequence intermittently NAKs, so some
+	 * boots came up with a blank panel (the #30 no-OLED guard skipped it). 400 kHz
+	 * inits reliably every boot; the path to true 60 fps is cutting per-frame eval
+	 * cost, not the bus. */
+	clock-frequency = <400000>;
+	/* i2c1_cfg (VIVO_D4/D3 -> IIC1, mux 5) is defined per-core: the arm and
+	 * riscv pin-macro names differ (PIN_VIVO_* vs DUOS_VIVO_*), like sdhci1_cfg.
+	 * The label resolves globally at dtc time. */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_cfg>;
+};
+
+/*
+ * RTC/PWR-domain GPIO controller (RTCSYS_GPIO, SG2000 TRM: 0x05021000-0x05021FFF).
+ * Mainline names only porta..portd (gpiochip0..3 at 0x0302_0000..3000) and leaves
+ * this always-on RTC-domain bank unexposed, so its lines -- PWR_GPIO0..2,
+ * PWR_WAKEUP0/1, PWR_BUTTON1, PWR_SEQ*, PWR_VBAT_DET -- are unreachable from
+ * Linux. It IS a standard DesignWare APB GPIO (confirmed by the register layout:
+ * DR@0x00=0, DDR@0x04=0 all-inputs, EXT_PORTA@0x50 reads live inputs), and the
+ * block is live out of reset (RTC domain), so a plain dw-apb-gpio node binds and
+ * gives a 5th gpiochip. This is what makes the badge's USER button reachable: it
+ * is wired (via the reused LCD_RST net) to PWR_GPIO1/2 (M12/N13), which is NOT on
+ * porta..portd. No clocks/resets: the debounce clock is optional and the RTC
+ * block is never reset. The pad mux still selects PWR_GPIO by default; a pinctrl
+ * state to force GPIO-input + input-enable is added per-core if a line needs it.
+ */
+/* The base dtsi's `soc` node is unlabeled, so merge by path (dtc unions same-path
+ * nodes) to add the RTC gpio under the existing simple-bus (which has ranges;). */
+/ {
+	soc {
+		rtcsys_gpio: gpio@5021000 {
+			compatible = "snps,dw-apb-gpio";
+			reg = <0x05021000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			porte: gpio-controller@0 {
+				compatible = "snps,dw-apb-gpio-port";
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				reg = <0>;
+				/* Line 2 is the S3 USER button (PWR_GPIO domain), found by
+				 * probing which RTC line flips on a press: active-low, rests
+				 * high, pressed pulls low. This controller has no edge IRQ, so
+				 * nix-badge LEVEL-POLLS it (see sysfs.Button.openPolled).
+				 * Naming through line 2 is enough; the rest stay unnamed. */
+				gpio-line-names = "", "", "user-btn";
+			};
+		};
+	};
+};
+
+/*
+ * HDMI output: the SG2000 display block drives the board's LT8912B (U16)
+ * DSI-to-HDMI bridge over two MIPI DSI data lanes. Resource provenance, vendor
+ * osdrv aa542c41: interdrv/vo/chip/cv181x/vo_mipi_tx.c:_init_resources
+ * (clk_disp, clk_dsi), interdrv/vpss/chip/cv181x/vpss_core.c:_init_resources
+ * (sc_top, D-PHY) and interdrv/base/base.c:base_probe (vip_sys). scaler_reg.h
+ * places sc_top, DISP and the DSI MAC in disjoint windows. The clock IDs are
+ * the mainline cv1800 binding names for those vendor clocks.
+ */
+/ {
+	soc {
+		vip_sys: syscon@a0c8000 {
+			compatible = "sophgo,sg2000-vip-sys", "syscon";
+			reg = <0x0a0c8000 0x1000>;
+			/* clk-cv1800.c:clk_cfg_reg_vip gates the register interface
+			 * separately from the AXI VIP children. syscon attaches the clock
+			 * to its regmap, which enables it around every access; the first
+			 * VIP read stalls without it. */
+			clocks = <&clk CLK_CFG_REG_VIP>;
+		};
+
+		sophgo_dsi: dsi@a080000 {
+			compatible = "sophgo,sg2000-dsi";
+			reg = <0x0a080000 0x1000>,
+			      <0x0a088000 0x1000>,
+			      <0x0a08a000 0x1000>,
+			      <0x0a0d1000 0x1000>;
+			reg-names = "sc_top", "disp", "dsi_mac", "dphy";
+			assigned-clocks = <&clk CLK_DSI_ESC>;
+			assigned-clock-parents = <&clk CLK_AXI6>;
+			assigned-clock-rates = <20000000>;
+			sophgo,vip-sys = <&vip_sys>;
+			/* axi_vip is the VIP AXI master clock the DISP DRAM reader needs.
+			 * The vendor display node never takes it (vendor display DMA
+			 * relies on the vi node's clk_axi), and nothing else holds it on
+			 * mainline, so clk_disable_unused would gate it. bt_vip is an AXI
+			 * gate beside the display gates that the vendor kernel leaves
+			 * running (its mipi_tx node lists it as clk_bt). */
+			clocks = <&clk CLK_SC_TOP_VIP>,
+				 <&clk CLK_DISP_VIP>, <&clk CLK_DSI_MAC_VIP>,
+				 <&clk CLK_DSI_ESC>, <&clk CLK_DISPPLL>,
+				 <&clk CLK_DISP_SRC_VIP>, <&clk CLK_DSI_SYNTH_SRC>,
+				 <&clk CLK_CFG_REG_VIP>,
+				 <&clk CLK_AXI_VIP>, <&clk CLK_BT_VIP>;
+			clock-names = "sc_top", "clk_disp", "clk_dsi", "dsi_esc",
+				      "disppll", "disp_src", "dsi_src",
+				      "cfg_reg", "axi_vip", "bt_vip";
+
+			port {
+				dsi_out: endpoint {
+					data-lanes = <0 1>;
+					remote-endpoint = <&lt8912_in>;
+				};
+			};
+		};
+	};
+
+	/* NixVegas/pcb d97cfc1d2f50a0447eaf80c7d025e58900b8f5e6, kicad/hdmi.kicad_sch
+	 * and nixos.kicad_pcb: +1V8 feeds the LT8912B's VDD (pins 18/33/57) through
+	 * L4, VCCA (5/26/41/50/52) through L3 and VCCA_HDMIPLL (34) through L2, with
+	 * no software enable. RESET_N (pin 64) is an R77/C47 RC to the rail; no CPU
+	 * GPIO resets the bridge. */
+	lt8912_1v8: regulator-lt8912-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "lt8912-board-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		type = "a";
+		/* IIC2 (I2C_SENSOR1, LT8912B pins 61/62) also reaches HDMI pins 15/16
+		 * through FET1/FET2. HPD goes to the LT8912B (pin 14, through Q12),
+		 * not to a CPU GPIO. */
+		ddc-i2c-bus = <&i2c2>;
+
+		port {
+			hdmi_in: endpoint {
+				remote-endpoint = <&lt8912_out>;
+			};
+		};
+	};
+};
+
+/* IIC2, the LT8912B control bus. The board's 10 k pull-ups need 100 kHz;
+ * cv180x.dtsi supplies the DesignWare controller, its clocks and its reset.
+ * iic2_cfg is defined per core, like i2c1_cfg. */
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&iic2_cfg>;
+
+	lt8912: bridge@48 {
+		compatible = "lontium,lt8912b";
+		reg = <0x48>;
+		vdd-supply = <&lt8912_1v8>;
+		vccmipirx-supply = <&lt8912_1v8>;
+		vccsysclk-supply = <&lt8912_1v8>;
+		vcclvdstx-supply = <&lt8912_1v8>;
+		vcchdmitx-supply = <&lt8912_1v8>;
+		vcclvdspll-supply = <&lt8912_1v8>;
+		vcchdmipll-supply = <&lt8912_1v8>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				lt8912_in: endpoint {
+					data-lanes = <0 1>;
+					remote-endpoint = <&dsi_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				lt8912_out: endpoint {
+					remote-endpoint = <&hdmi_in>;
+				};
+			};
+		};
+	};
+};

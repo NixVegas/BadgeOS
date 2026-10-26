@@ -9,6 +9,25 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.tar.gz";
     flakever.url = "github:numinit/flakever";
+    # deploy-rs: push a closure + activate it on the badge over SSH. Follows the
+    # badge's nixpkgs so the target-arch activate wrapper matches the systems.
+    deploy-rs.url = "github:serokell/deploy-rs";
+    deploy-rs.inputs.nixpkgs.follows = "nixpkgs-2605";
+    # psyclyx/fix: a fast, parallel Nix-language evaluator (Zig). It has no
+    # flake.nix (it uses npins), so it comes in as a plain source and is built
+    # via its own default.nix overlay against our nixpkgs (which has zig_0_16).
+    # Used at build time to evaluate the pure-Nix bling screens into blobs.
+    fix = {
+      url = "github:psyclyx/fix";
+      flake = false;
+    };
+    zippy = {
+      url = "git+https://git.lilithsemi.com/LilithSemi/zippy";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flakever.follows = "flakever";
+      };
+    };
   };
 
   outputs =
@@ -18,6 +37,8 @@
       flakever,
       nixpkgs-esp-dev,
       nixpkgs-2605,
+      deploy-rs,
+      zippy,
       ...
     }:
     let
@@ -58,8 +79,14 @@
             }
             ./modules/duo-s/common.nix
             ./modules/duo-s/base.nix
+            ./modules/duo-s/soc-features.nix
             ./modules/duo-s/wifi.nix
-            ./modules/duo-s/leds.nix
+            ./modules/duo-s/bling.nix
+            ./modules/duo-s/oled.nix
+            ./modules/duo-s/oled-early.nix
+            ./modules/duo-s/hdmi.nix
+            ./modules/duo-s/bootswap.nix
+            ./modules/duo-s/deploy.nix
             ./modules/duo-s/core-${core}.nix
           ];
         };
@@ -104,6 +131,9 @@
             inherit pkgs;
             core = "riscv";
           };
+          # The polyglot fip (#48): the ACTIVE fip.bin, boots either core by the
+          # strap. The split fips above stay as recovery blobs.
+          fipPolyglotReal = import ./pkgs/firmware/fip-polyglot.nix { inherit pkgs; };
           mkCombinedRoot = import ./pkgs/sdcard/make-combined-root.nix { inherit pkgs; };
           mkBoot = import ./pkgs/sdcard/make-boot-dir.nix { inherit pkgs; };
           mkImg = import ./pkgs/sdcard/make-sd-image.nix { inherit pkgs; };
@@ -119,6 +149,7 @@
             inherit armSys riscvSys;
             fipArm = fipArmReal;
             fipRiscv = fipRiscvReal;
+            fipPolyglot = fipPolyglotReal;
             defaultCore = "arm";
           };
         in
@@ -144,6 +175,60 @@
 
         # badgeOS NixOS systems (built against nixpkgs 26.05).
         nixosConfigurations = duosNixosConfigurations;
+
+        # deploy-rs: two nodes, one per core, both reaching the same badge (only
+        # one core is booted at a time). Deploy the node matching the CURRENTLY
+        # booted core, e.g. `nix run github:serokell/deploy-rs -- .#nixbadge-duos-arm`
+        # (or -riscv). Each node activates ONLY its own /boot/<core> subtree and
+        # its own firmware (fip-<core>.bin, plus the active fip.bin when it
+        # already selects this core). It never points fip.bin at the OTHER core,
+        # so a deploy still cannot switch cores -- use `nix-badge core <arch>` +
+        # reboot for that. The cross (-x86_64) systems
+        # build on an x86_64 dev host; see modules/duo-s/deploy.nix for the
+        # dual-core installer and the passwordless-sudo requirement.
+        deploy.nodes =
+          let
+            # deploy-rs only ships lib.<system> for its flake-utils systems
+            # (x86_64/aarch64/darwin -- no riscv64). Its lib is just its overlay
+            # applied to a nixpkgs, so build the per-target lib ourselves against
+            # nixpkgs-2605; this gives a working riscv64 node too. The activate
+            # wrapper is the target-arch deploy-rs binary and builds at deploy time.
+            #
+            # CROSS, not native: deploy from an x86_64 dev host. If we imported
+            # nixpkgs with `system = <target>` (native aarch64/riscv64), the
+            # deploy-rs Rust binary + the activatable-nixos-system wrapper would
+            # be native target-arch builds and, with no target remote builder,
+            # nix falls back to qemu user emulation (a `qemu-aarch64 rustc` grind
+            # that made the first deploy crawl). Instead we take the x86_64 pkgs
+            # set's `pkgsCross.<target>` (buildPlatform=x86_64 / hostPlatform=
+            # target) and apply the deploy-rs overlay on top -- the overlay
+            # propagates into pkgsCross, so `deploy-rs.deploy-rs` and the wrapper
+            # build ON x86_64 with a gcc/rust cross toolchain. The RUNTIME output
+            # is byte-for-byte a target-arch package (aarch64/riscv64 activate
+            # binary + shebangs), just cross-produced instead of emulated.
+            #
+            # crossName maps our deploy node system -> nixpkgs pkgsCross attr.
+            crossName = {
+              "aarch64-linux" = "aarch64-multiplatform";
+              "riscv64-linux" = "riscv64";
+            };
+            deployLibFor =
+              system:
+              (import nixpkgs-2605 {
+                system = "x86_64-linux";
+                overlays = [ deploy-rs.overlays.default ];
+              }).pkgsCross.${crossName.${system}}.deploy-rs.lib;
+            mkNode = system: nixosCfg: {
+              hostname = "10.8.3.128"; # current DHCP address; override with --hostname
+              sshUser = "badge";
+              user = "root";
+              profiles.system.path = (deployLibFor system).activate.nixos nixosCfg;
+            };
+          in
+          {
+            nixbadge-duos-arm = mkNode "aarch64-linux" self.nixosConfigurations."duo-s-arm-x86_64";
+            nixbadge-duos-riscv = mkNode "riscv64-linux" self.nixosConfigurations."duo-s-riscv-x86_64";
+          };
       };
 
       systems = [
@@ -190,10 +275,65 @@
           packages = {
             default = pkgs.duo-s-sdcard;
             v1 = pkgs.nixbadge-v1;
+            # OpenOCD with the CH347 driver, for JTAG over the badge's J1 port.
+            openocd-ch347 = import ./pkgs/openocd-ch347.nix { inherit pkgs; };
+            # The `fix` evaluator (psyclyx/fix), built via its overlay on our
+            # nixpkgs. Exposed so the bling content bake can use it.
+            fix = (pkgs.extend (import inputs.fix { }).overlay).fix;
+            # A pure-Nix OLED animation baked to a BADA blob by `fix` -- the
+            # proof that the badge's screens can be authored in Nix. Build-time
+            # data only now: the runtime's `--badapple` blob player was removed
+            # (the pure-Nix live screens under bling-content supersede it).
+            bling-demo = import ./pkgs/badge/bling-content {
+              inherit pkgs;
+              fix = (pkgs.extend (import inputs.fix { }).overlay).fix;
+            };
+            # A pure-Nix LED ring pattern (rotating rainbow, f(t)->[rgb]) baked to
+            # a BLED blob by fix. Play it with `nix-badge bling set --blob <path>`.
+            bling-leds-demo = import ./pkgs/badge/bling-content {
+              inherit pkgs;
+              fix = (pkgs.extend (import inputs.fix { }).overlay).fix;
+              entry = "leds-demo.nix";
+              name = "bling-leds-demo";
+            };
+            # Bad Apple as a PURE-NIX per-frame pattern the embedded fix
+            # evaluator applies once per frame on the OLED (compile-once +
+            # native applyValue, decoded to page-major bytes by renderOled).
+            # Point the runtime at it with `nix-badge oled --eval-screen
+            # <result>/badapple-live.nix`. durationSeconds defaults small (a fast
+            # test file); override for the whole song. The frames are re-encoded
+            # from the deterministic ffmpeg-baked BADA blob, so build it on the
+            # build host (buildPackages) -- the output is arch-neutral Nix text.
+            bling-badapple-live = import ./pkgs/badge/bling-content/badapple-live.nix {
+              pkgs = pkgs.buildPackages;
+            };
+            # The pure-Nix OLED INFO screens (battery/load/power/clock +
+            # currentsystem, in the Sun Gallant font) installed to ONE store dir
+            # with their draw.nix lib + Gallant glyph table + oled.nix, structure
+            # preserved so the runtime fix resolves each screen's relative imports
+            # (`import ./draw.nix`, `../oled.nix`) off the store path. the oled engine cycles
+            # these + badapple-live through one shared fix Engine (a ScreenSet).
+            # Point the runtime at "''${bling-screens}/screens/battery.nix" etc.
+            # Arch-neutral Nix text -> build on the build host (buildPackages).
+            bling-screens = import ./pkgs/badge/bling-content/screens-install.nix {
+              pkgs = pkgs.buildPackages;
+            };
           };
 
           devShells = {
             v1 = pkgs.nixbadge-v1.shell;
+            # `nix develop` -> the deploy shell: deploy-rs (the native dev-host binary) on
+            # PATH so you can `deploy .#nixbadge-duos-arm --hostname <ip> --ssh-user badge`
+            # without the `nix run github:serokell/deploy-rs --` dance. sshpass is here too
+            # for the `sshpass -p nixbadge` badge login path.
+            default = pkgs.mkShellNoCC {
+              packages = [
+                deploy-rs.packages.${system}.default
+                pkgs.sshpass
+                pkgs.openssh
+                zippy.packages.${system}.default
+              ];
+            };
           };
         };
     };
