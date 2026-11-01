@@ -1,0 +1,106 @@
+/* U-Boot control DTS for the LicheeRV Nano (SG2002) A53, installed as
+ * arch/arm/dts/cv181x_cv181xasic.dts and embedded with OF_EMBED: sophgone's Duo S
+ * aarch64 control DTS with 256 MB, no eMMC, and no UHS on the SD card. */
+/dts-v1/;
+
+/ {
+    model = "Sipeed LicheeRV Nano";
+    compatible = "sipeed,licheerv-nano", "sophgo,sg2002", "cvitek,cv181x";
+
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    memory@80000000 {
+        device_type = "memory";
+        /* 256 MB DDR at 0x80000000 */
+        reg = <0x00 0x80000000 0x00 0x10000000>;
+    };
+
+    chosen {
+        stdout-path = "serial0:115200n8";
+    };
+
+    /* GPT partition holding the U-Boot environment. cvi-env-medium.c's
+     * mmc_get_env_addr() places the copies; this names the partition. */
+    config {
+        u-boot,mmc-env-partition = "UBOOT";
+    };
+
+    aliases {
+        serial0 = &uart0;
+        mmc0    = &sd;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0>;
+            enable-method = "psci";
+        };
+    };
+
+    psci {
+        compatible = "arm,psci-0.2";
+        method = "smc";
+    };
+
+    gic: interrupt-controller@1f01000 {
+        compatible = "arm,gic-400", "arm,cortex-a15-gic";
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        reg = <0x00 0x01f01000 0x00 0x1000>,
+              <0x00 0x01f02000 0x00 0x2000>;
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+        interrupts = <1 13 0xff01>,
+                     <1 14 0xff01>,
+                     <1 11 0xff01>,
+                     <1 10 0xff01>;
+        interrupt-parent = <&gic>;
+    };
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "simple-bus";
+        ranges;
+
+        uart0: serial@4140000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x00 0x04140000 0x00 0x1000>;
+            clock-frequency = <25000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            status = "okay";
+        };
+
+        /* The SD pads are 3.3 V only, as in the kernel's DTS: with the Duo S's UHS
+         * modes the card never answers ("Card did not respond to voltage select"). */
+        sd: cv-sd@4310000 {
+            compatible = "cvitek,cv181x-sd";
+            reg = <0x00 0x04310000 0x00 0x1000>;
+            reg-names = "core_mem";
+            bus-width = <4>;
+            cap-sd-highspeed;
+            cap-mmc-highspeed;
+            no-1-8-v;
+            no-sdio;
+            no-mmc;
+            src-frequency = <375000000>;
+            min-frequency = <400000>;
+            max-frequency = <200000000>;
+            64_addressing;
+            reset_tx_rx_phy;
+            reset-names = "sdhci";
+            pll_index = <6>;
+            pll_reg = <0x3002070>;
+            status = "okay";
+        };
+    };
+};

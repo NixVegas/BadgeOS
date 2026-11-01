@@ -1,0 +1,318 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The NixVegas badge carrier, on either core: the SPI3 LED ring and Sharp panel, the
+ * SAO power hog, the SARADC rail meters, the I2C1 OLED, the I2C2 LT8912B bridge and
+ * I2S2 HDMI audio. Each core's DTS keeps its own pinctrl, DMA cells and line names.
+ */
+
+/*
+ * SPI3 (DesignWare APB SSI) on the 40-pin header drives both the WS2812 LED
+ * ring (/dev/spidev3.0) and the Sharp Memory Display (display@1) over one bus
+ * with the CS-and-gate wiring: U10 gates LED_DIN = CS and SDO, and the front
+ * connector routes the same CS net through an inverter to the display's SCS.
+ * The controller node itself (compatible/reg/#cells/clocks/interrupts/resets)
+ * comes from the base cv180x.dtsi (status="disabled"); this enables it and adds
+ * the two board devices. Identical on both cores, so it lives here.
+ *
+ * Per-core bits stay in each DTS: `dmas` (the cv1800b dmamux request's CPU
+ * cell, 0 = CA53 on ARM / 1 = C906 on RISC-V) and, on ARM only, the GIC-form
+ * `interrupts` override (the base's 2-cell PLIC form is wrong under the arm64
+ * GIC); plus the `spi3_cfg` pinctrl, whose pin-macro names differ (arm PIN_*
+ * vs riscv SG2000_*), referenced here by label. Requires RESET_SIMPLE in the
+ * kernel (shared, base.nix) so &rst binds and RST_SPI3 is deasserted, without
+ * it the optional reset never releases and the bus comes up half-reset.
+ */
+&spi3 {
+	num-cs = <2>;
+	/* GPIO chip select, active-high. U10 passes LED data only while CS is
+	 * high; the native DW CS cannot do active-high (dw_spi_set_cs just sets
+	 * SER regardless of level), so use a gpiod CS, dw_spi sets
+	 * SPI_CONTROLLER_GPIO_SS so SER is still raised and data flows. VIVO_D5 is
+	 * XGPIOB_16 at mux 3 (see each core's spi3_cfg). */
+	cs-gpios = <&portb 16 GPIO_ACTIVE_HIGH>;
+	pinctrl-0 = <&spi3_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	/* WS2812 ring at /dev/spidev3.0. spidev binds known compatibles only;
+	 * rohm,dh2228fv is in spidev_dt_ids. spi-cs-high is required for the U10
+	 * and gate: gpiolib-of forces every SPI cs-gpio active-low unless the child
+	 * carries spi-cs-high (SPI children default to active-low chip selects). */
+	spidev@0 {
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		spi-cs-high;
+	};
+
+	/* Sharp Memory Display (LS027B7DH01, 400x240) as a DRM fbcon. The
+	 * same CS net reaches SCS through an inverter, so this child has NO cs-gpios
+	 * (the controller's cs-gpios array has one entry; index 1 is NULL) and the
+	 * SPI core toggles nothing here, the line sits where the LED cs-gpio
+	 * (spidev3.0) left it: low = display selected when the painter is idle.
+	 * EXTMODE strapped low => software VCOM (kthread toggles the in-band VCOM
+	 * bit, no EXTCOMIN pin); DISP tied high => no enable-gpios. */
+	display@1 {
+		compatible = "sharp,ls027b7dh01";
+		reg = <1>;
+		spi-max-frequency = <2000000>;
+		sharp,vcom-mode = "software";
+	};
+};
+
+/*
+ * SAO connector power hog. Lives in its own &portb block; dtc merges it with
+ * each core's &portb (which carries the core-specific gpio-line-names).
+ */
+&portb {
+	/* Enable the SAO connector power (U13 EN + U12 OE) at boot. */
+	sao-power-en-hog {
+		gpio-hog;
+		gpios = <21 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sao-power-en";
+	};
+};
+
+/*
+ * SARADC for the battery + rail voltage meters. The cv1800b-adc IIO driver
+ * exposes in_voltage0/1/2 (scale 3300/4096 = ~0.8057 mV per LSB). Channel map:
+ *   in_voltage0 = VSEL  (system rail, = VBUS through the TPS2116 mux; R16/R19),
+ *                       2.2M/1M divider -> read via the vsel-divider rescale
+ *   in_voltage1 = VBAT  (battery; R15 2.2M / R18 1M), divider -> vbat-divider
+ *   in_voltage2 = J6    (user ADC test point, NO divider) -> read the base
+ *                       channel directly: in_voltage2_raw * in_voltage_scale
+ * VSEL/VBAT need the divider because they exceed the 3.3V input; J6 does not.
+ * The base node (cv180x.dtsi) is status="disabled" with channel@0..2 declared.
+ */
+&saradc {
+	status = "okay";
+	/* Expose the ADC channels to in-kernel consumers (the iio-rescale below). */
+	#io-channel-cells = <1>;
+};
+
+/*
+ * VBAT as a standard Linux power_supply, to compare against nix-badge's
+ * per-badge VBUS auto-cal and decide fixed-factor-vs-cal. iio-rescale
+ * (voltage-divider) applies a FIXED factor to the VBAT SARADC channel;
+ * generic-adc-battery (adc-battery) then publishes it at
+ * /sys/class/power_supply/. The physical divider is 2.2M/1M (x3.2), but the
+ * ~138k leaky SARADC input loads it to an effective ~19.24, so output/full-ohms
+ * encode ~19.24 (a per-SoC approximation, not the real resistors). Compare
+ * voltage_now here to `nix-badge power` (which auto-cals per badge off the ~5V
+ * VBUS) to see how far a single fixed factor drifts across badges/temperature.
+ * Both cores get this via the shared dtsi. Drivers autoload (CONFIG_IIO_RESCALE,
+ * CONFIG_GENERIC_ADC_BATTERY are =m).
+ */
+/ {
+	/* VSEL and VBAT exceed the ADC's 3.3V input range, so each goes through a
+	 * 2.2M/1M divider; an iio-rescale presents the true rail voltage in sysfs
+	 * (raw*scale = real mV, effective ~19.24 after the leaky ADC input) so
+	 * userspace needs no hardcoded factor. `label` surfaces at
+	 * /sys/bus/iio/devices/iio:deviceN/label. VBAT additionally feeds an
+	 * adc-battery below for the power_supply %/status interface; VSEL is the
+	 * system rail (VBUS through the TPS2116 mux). J6 is a direct user ADC input
+	 * with NO divider, read it straight from SARADC channel 2 (in_voltage2_raw
+	 * * in_voltage_scale), no rescale. */
+	vsel_scaled: vsel-divider {
+		compatible = "voltage-divider";
+		io-channels = <&saradc 0>; /* VSEL = SARADC channel 0 */
+		#io-channel-cells = <1>;
+		output-ohms = <1000>;
+		full-ohms = <19240>;
+		label = "vsel";
+	};
+
+	/* measured 2026-09-12, badge #1, with a pack fitted and the SARADC
+	 * completion race fixed: VBAT is far noisier than VSEL even though the two
+	 * nets are electrically identical (2.2M to source, 1M to GND, 10nF to GND;
+	 * 687.5k || 10nF = 6.9ms, a 23Hz corner). VBAT sd ~116 raw (~1.8 V!),
+	 * swinging 0..584; VSEL sd ~20 on the same ADC and the same conversions.
+	 * Eliminated by measurement: the ADC and its driver (VSEL is clean), the
+	 * divider topology (identical), the S/H draining the 10nF (rate-invariant,
+	 * sd 126/124/141/123 at 0/10/35/100ms gaps, no collapse at 5*tau), and pack
+	 * internal resistance (load-invariant, sd 116/104/117 idle/loaded/idle,
+	 * median flat). So it is an analog fault on the VBAT path: the 10nF not
+	 * doing its job here, board coupling below 23Hz or past the filter, or a
+	 * damaged ch1 input in the SoC. Scope the divider midpoint, or jumper
+	 * VBAT_MEASURE to the J6 pad (ch2), if the noise follows the net it is the
+	 * board, if it stays on ch1 it is the SoC pin. Until then treat the
+	 * power_supply voltage_now as advisory and trust nix-badge's median. */
+	vbat_scaled: vbat-divider {
+		compatible = "voltage-divider";
+		io-channels = <&saradc 1>; /* VBAT = SARADC channel 1 */
+		#io-channel-cells = <1>;
+		output-ohms = <1000>;
+		full-ohms = <19240>; /* 19240/1000 = 19.24 effective factor */
+		label = "vbat";
+	};
+
+	badge_battery: badge-battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3000000>;
+		voltage-max-design-microvolt = <4200000>;
+	};
+
+	vbat_supply: vbat-adc-battery {
+		compatible = "adc-battery";
+		io-channels = <&vbat_scaled 0>;
+		io-channel-names = "voltage";
+		monitored-battery = <&badge_battery>;
+	};
+};
+
+/*
+ * SAO connector I2C = IIC1 (i2c@4010000) for the 128x32 SSD1306 OLED at 0x3c.
+ * The bling engine drives the panel from userspace over /dev/i2c-1 (i2c-dev),
+ * so we enable the controller but bind no in-kernel client (no ssd1306fb, which
+ * would claim 0x3c). The SAO SDA/SCL pads are PORTB 17/18 = PIN_VIVO_D4 /
+ * PIN_VIVO_D3; their IIC1 pinmux (i2c1_cfg) is in each core's DTS, since the
+ * arm and riscv pin-macro names differ (like sdhci1_cfg).
+ */
+/* Pin i2c@4010000 to /dev/i2c-1 deterministically (without an alias it takes the
+ * first free dynamic bus number, i2c-0 here, since it is the only enabled i2c).
+ * The bling engine / `nix-badge oled` open /dev/i2c-1. */
+/ {
+	aliases {
+		i2c1 = &i2c1;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	/* 400 kHz standard fast-mode. We tried 1 MHz fast-mode-plus for 60 fps Bad Apple
+	 * headroom, but (a) it gave no fps gain, the delta player is fix-eval-bound at
+	 * ~46 fps, not I2C-bandwidth-bound, so a faster bus doesn't lift the ceiling,
+	 * and (b) it was marginal for the SAO wiring: single-byte i2cdetect still ACKs at
+	 * 1 MHz. That was pinned back to 400 kHz once, because the multi-byte SSD1306
+	 * init sequence intermittently NAKs at 1 MHz and a NAK during init is not a
+	 * small failure: Panel.open reads it as "nothing answers at 0x3c" and the
+	 * badge runs blind until the next boot (the no-OLED guard). It is back at
+	 * 1 MHz now that command frames retry, see cmd_retries / writeCmdFrame in
+	 * pkgs/badge/nix-badge/oled.zig, which re-sends a frame the panel did not ACK
+	 * (safe because every init and addressing byte is an idempotent register
+	 * write; data frames deliberately do not retry).
+	 *
+	 * Do not read this as the road to 60 fps. Measured on the badge, the oled
+	 * daemon splits 26% user / 6% kernel, so it is per-frame eval cost that
+	 * dominates, not the bus, and Bad Apple's delta frames are tens of bytes
+	 * either way. What 1 MHz actually buys is full-frame flushes: ~23 ms at
+	 * 400 kHz against ~9 ms here. If blank-panel boots ever come back, drop this
+	 * to 400000 first and reopen the retry path second. */
+	clock-frequency = <1000000>;
+	/* i2c1_cfg (VIVO_D4/D3 -> IIC1, mux 5) is defined per-core: the arm and
+	 * riscv pin-macro names differ (PIN_VIVO_* vs SG2000_VIVO_*), like sdhci1_cfg.
+	 * The label resolves globally at dtc time. */
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_cfg>;
+};
+
+/*
+ * IIC2 carries the LT8912B HDMI bridge control port: 0x48 main, 0x49
+ * DSI/AVI, 0x4a. Disabled in cv180x.dtsi by default, without this only
+ * /dev/i2c-1 exists and the bridge cannot be programmed at all, which on the
+ * riscv core showed up as a perfect DSI stream going into an unconfigured
+ * bridge. 100 kHz standard mode for a robust first register probe (the part
+ * tolerates 400 kHz; can be raised later).
+ *
+ * iic2_cfg (IIC2_SCL/SDA, chip J13/J14, mux 0) is defined per-core for the
+ * same reason as i2c1_cfg: the arm and riscv pin-macro names differ. Those
+ * pads are IO_TYPE_1V8_ONLY, so both definitions must use power-source 1800
+ * or the whole pin state -EINVALs.
+ */
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&iic2_cfg>;
+};
+
+/*
+ * HDMI audio: SG2000 I2S2 -> LT8912B I2S input.
+ *
+ * Traced from the badge's own KiCad sources (pcb, cpu.kicad_sch +
+ * hdmi.kicad_sch). Three global-label nets, module -> bridge, and nowhere
+ * else:
+ *
+ *   net        U1 pin           SoC pad (ball)          U16 (LT8912B) pin
+ *   I2S_BCLK   19 AUDIO_IN_L    PAD_AUD_AINL_MIC (H1)   60  SCLK_I
+ *   I2S_LRCK   17 AUDIO_OUT_L   PAD_AUD_AOUTL    (F2)   59  WS_I
+ *   I2S_SPKR   18 AUDIO_OUT_R   PAD_AUD_AOUTR    (G2)   58  SD0
+ *
+ * At fmux value 5 all three pads select IIS2 (IIS2_BCLK / IIS2_LRCK /
+ * IIS2_DO) with the correct direction on each. IIS1 would also reach them
+ * but needs a mixed 4/4/6 and puts AOUTR in input mode, which is wrong.
+ *
+ * There is NO MCLK net. The only MCLK-capable exposed pad is IIC2_SDA, which
+ * carries the bridge's own control bus, so the SoC must be I2S master and the
+ * bridge recovers its clock from BCLK. That suits the driver, which forces
+ * CLK_MCLK_OUT_EN = 0 anyway.
+ *
+ * The AIAO crossbar reset default already routes external IIS2 <-> i2s_tdm_2
+ * (i2s_tdm_sdo_out_sel @ 0x0410800c bits 10:8 = 0x6), so i2s2@4120000 is the
+ * controller and no crossbar poke is needed.
+ *
+ * This forfeits the internal analog codec: int_dac/int_adc drive these same
+ * four pads, and stay disabled.
+ *
+ * Note both arches get i2s2 from the same node, arm64's sg2000.dtsi does
+ * `#include <riscv/sophgo/cv180x.dtsi>`, so this override is shared. Only
+ * the pinmux (different pin-numbering headers) and the DMA CPU cell differ,
+ * and those live in the per-arch .dts.
+ */
+&i2s2 {
+	status = "okay";
+	/* The inherited node has no #sound-dai-cells; simple-audio-card's
+	 * `sound-dai = <&i2s2>` will not resolve without it. */
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&iis2_cfg>;
+};
+
+/ {
+	/*
+	 * The LT8912B is configured over /dev/i2c-2 by the same userspace
+	 * bring-up recipe that drives the video side, so ASoC only needs a DAI
+	 * to terminate the link against. linux,spdif-dit is the canonical stub.
+	 *
+	 * Giving the bridge a real DRM bridge node instead would need a DSI
+	 * host for it to attach to, which only soph_drm in the desktop profile
+	 * provides (site/src/hdmi.md).
+	 */
+	hdmi_dai: spdif-transmitter {
+		compatible = "linux,spdif-dit";
+		#sound-dai-cells = <0>;
+	};
+
+	hdmi_sound: sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "LT8912B HDMI";
+		simple-audio-card,format = "i2s";
+		/*
+		 * The SoC drives BCLK and LRCK. simple-card flips the polarity
+		 * for the CPU end, so cv1800b_i2s_dai_set_fmt() sees CBP_CFP
+		 * and sets master_mode. The bridge is a pure slave sink, it
+		 * has no clock to give us, and no MCLK is routed.
+		 */
+		simple-audio-card,bitclock-master = <&hdmi_cpu_dai>;
+		simple-audio-card,frame-master = <&hdmi_cpu_dai>;
+
+		hdmi_cpu_dai: simple-audio-card,cpu {
+			sound-dai = <&i2s2>;
+			/*
+			 * MCLK fixed at 24.576 MHz (audio PLL / 32), set once at probe.
+			 * Without it simple-card hands the I2S driver the rate of the
+			 * node's first clock, the 300 MHz APB clock, as MCLK; the driver
+			 * sizes BCLK from that while the real MCLK is 262 MHz, so 48 kHz
+			 * plays at 42 kHz. Fixed rather than mclk-fs: with mclk-fs
+			 * simple-card resets the sysclk to 0 after every stream, which
+			 * cv1800b-tdm rejects with -EINVAL.
+			 */
+			system-clock-frequency = <24576000>;
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&hdmi_dai>;
+		};
+	};
+};

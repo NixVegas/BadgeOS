@@ -1,0 +1,114 @@
+--- a/cmd/efuse.c
++++ b/cmd/efuse.c
+@@ -1134,23 +1134,16 @@
+ #define BTNSEL_CONF_DIR "/arm/extlinux"
+ #endif
+ 
+-#define XGPIOB_BASE		0x03021000UL
+-#define XGPIOB_DDR		(XGPIOB_BASE + 0x04)
+-#define XGPIOB_EXT		(XGPIOB_BASE + 0x50)
+-#define BOOT_BTN_BIT		4
++/* LicheeRV Nano: BOOT is the user key, XGPIOA_30 on the AUX0 pad, active low. */
++#define XGPIOA_BASE		0x03020000UL
++#define XGPIOA_DDR		(XGPIOA_BASE + 0x04)
++#define XGPIOA_EXT		(XGPIOA_BASE + 0x50)
++#define BOOT_BTN_BIT		30
+ 
+ #define BTNSEL_PINMUX_BASE	0x03001000UL
+-#define BTNSEL_USB_ID_FUNCSEL	(BTNSEL_PINMUX_BASE + 0xFC)
++#define BTNSEL_AUX0_FUNCSEL	(BTNSEL_PINMUX_BASE + 0x78)
+ #define BTNSEL_FUNCSEL_MASK	0x7
+-#define BTNSEL_FUNC_XGPIOB_4	0x3
+-
+-#define RTCGPIO_BASE		0x05021000UL
+-#define RTCGPIO_DDR		(RTCGPIO_BASE + 0x04)
+-#define RTCGPIO_EXT		(RTCGPIO_BASE + 0x50)
+-#define USER_BTN_BIT		2
+-
+-#define BTNSEL_PWR_GPIO2_FUNCSEL (BTNSEL_PINMUX_BASE + 0xAC)
+-#define BTNSEL_FUNC_PWR_GPIO_2	0x0
++#define BTNSEL_FUNC_XGPIOA_30	0x3
+ 
+ /* Sampling window. Long enough to ride out contact bounce and to be an
+  * unambiguous "hold" rather than a stray level, short enough that it is not
+@@ -1166,66 +1159,36 @@
+  * restored before returning, on every path including the early-out. */
+ static int boot_btn_held(void)
+ {
+-	uint32_t mux, v;
++	uint32_t mux, ddr;
+ 	int i, held = 1;
+ 
+-	/* USB_ID pad -> XGPIOB_4, remembering what it was. */
+-	mux = mmio_read_32(BTNSEL_USB_ID_FUNCSEL);
+-	mmio_write_32(BTNSEL_USB_ID_FUNCSEL,
+-		      (mux & ~BTNSEL_FUNCSEL_MASK) | BTNSEL_FUNC_XGPIOB_4);
+-
+-	/* Direction = input, leaving every other XGPIOB line alone. */
+-	v = mmio_read_32(XGPIOB_DDR);
+-	mmio_write_32(XGPIOB_DDR, v & ~(1u << BOOT_BTN_BIT));
++	/* AUX0 pad -> XGPIOA_30, remembering what it was. */
++	mux = mmio_read_32(BTNSEL_AUX0_FUNCSEL);
++	mmio_write_32(BTNSEL_AUX0_FUNCSEL,
++		      (mux & ~BTNSEL_FUNCSEL_MASK) | BTNSEL_FUNC_XGPIOA_30);
++
++	/* Direction = input, leaving every other XGPIOA line alone. */
++	ddr = mmio_read_32(XGPIOA_DDR);
++	mmio_write_32(XGPIOA_DDR, ddr & ~(1u << BOOT_BTN_BIT));
+ 
+ 	for (i = 0; i < BTNSEL_SAMPLES; i++) {
+-		if ((mmio_read_32(XGPIOB_EXT) >> BOOT_BTN_BIT) & 1) {
++		if ((mmio_read_32(XGPIOA_EXT) >> BOOT_BTN_BIT) & 1) {
+ 			held = 0;	/* high = released */
+ 			break;
+ 		}
+ 		mdelay(BTNSEL_SAMPLE_MS);
+ 	}
+ 
+-	mmio_write_32(BTNSEL_USB_ID_FUNCSEL, mux);
++	mmio_write_32(XGPIOA_DDR, ddr);
++	mmio_write_32(BTNSEL_AUX0_FUNCSEL, mux);
+ 	return held;
+ }
+ 
+ 
+-/* Same contract as boot_btn_held(), for S3 USER on RTC GPIO line 2. A mux or
+- * direction write that does not read back also means "not held", so a USER
+- * misread can only leave $bootconf where BOOT put it. Pad mux and direction
+- * bit are restored on every path. */
++/* The Nano has no USER button (PWR_GPIO2 drives its LCD backlight): never held. */
+ static int user_btn_held(void)
+ {
+-	uint32_t mux, ddr;
+-	int i, held = 1;
+-
+-	/* PWR_GPIO2 pad -> PWR_GPIO_2 (its reset default), remembering it. */
+-	mux = mmio_read_32(BTNSEL_PWR_GPIO2_FUNCSEL);
+-	mmio_write_32(BTNSEL_PWR_GPIO2_FUNCSEL,
+-		      (mux & ~BTNSEL_FUNCSEL_MASK) | BTNSEL_FUNC_PWR_GPIO_2);
+-
+-	/* Direction = input for line 2 only. */
+-	ddr = mmio_read_32(RTCGPIO_DDR);
+-	mmio_write_32(RTCGPIO_DDR, ddr & ~(1u << USER_BTN_BIT));
+-
+-	if ((mmio_read_32(BTNSEL_PWR_GPIO2_FUNCSEL) & BTNSEL_FUNCSEL_MASK) !=
+-		    BTNSEL_FUNC_PWR_GPIO_2 ||
+-	    ((mmio_read_32(RTCGPIO_DDR) >> USER_BTN_BIT) & 1)) {
+-		held = 0;	/* setup did not take: fail safe */
+-	} else {
+-		for (i = 0; i < BTNSEL_SAMPLES; i++) {
+-			if ((mmio_read_32(RTCGPIO_EXT) >> USER_BTN_BIT) & 1) {
+-				held = 0;	/* high = released */
+-				break;
+-			}
+-			mdelay(BTNSEL_SAMPLE_MS);
+-		}
+-	}
+-
+-	mmio_write_32(RTCGPIO_DDR, ddr);
+-	mmio_write_32(BTNSEL_PWR_GPIO2_FUNCSEL, mux);
+-	return held;
++	return 0;
+ }
+ 
+ #define BTNSEL_NAME_MAX		32

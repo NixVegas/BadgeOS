@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The LicheeRV Nano on its A53: the board (licheerv-nano.dtsi) on the SG2002 as the A53
+ * sees it (sg2002-arm.dtsi).
+ */
+
+/dts-v1/;
+#include "sg2002-arm.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/sophgo,cv1800.h>
+#include "licheerv-nano.dtsi"

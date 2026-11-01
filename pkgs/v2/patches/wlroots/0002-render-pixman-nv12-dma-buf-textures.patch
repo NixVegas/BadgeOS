@@ -1,0 +1,811 @@
+render/pixman: NV12 DMA-BUF textures
+
+The pixman renderer has no DRM FD and no DMA-BUF texture formats, so a
+compositor using it offers no linux-dmabuf, and no client buffer can be
+scanned out directly: the DRM backend scans out DMA-BUFs only. On a
+display controller whose plane takes YUV but which has no GPU, a video
+client's NV12 frames could go straight to the plane, but have to be
+converted and composited on the CPU instead.
+
+Give the pixman renderer a duplicate of the backend's DRM FD, taken in
+wlr_renderer_autocreate(), and DMA-BUF texture formats of NV12 with the
+linear and implicit modifiers. A texture imported from an NV12 DMA-BUF
+is converted to XRGB8888 (BT.601, limited range) on the CPU the first
+time it is drawn or read, so a buffer that is scanned out is never even
+mapped. DMA-BUF mappings are often write-combined, so the conversion
+copies whole rows out with wide loads before converting them, with NEON
+on aarch64 (bit-exact with the C code). A buffer that cannot be
+converted is drawn black. RGB formats are not offered: they would only
+move clients off wl_shm onto the same CPU copy.
+
+With an FD, the renderer would also make DMA-BUF screen capture
+reachable, which it cannot fill. ext-image-copy-capture and
+wlr-screencopy now offer DMA-BUFs only if the renderer can render into
+them.
+
+Without a backend DRM FD (the headless backend, or the multi-GPU blit
+renderer) nothing changes.
+
+Signed-off-by: badgeos
+---
+diff --git a/include/render/dmabuf.h b/include/render/dmabuf.h
+index 3d905ce..5136d5e 100644
+--- a/include/render/dmabuf.h
++++ b/include/render/dmabuf.h
+@@ -8,6 +8,8 @@
+ #define DMA_BUF_SYNC_READ      (1 << 0)
+ #define DMA_BUF_SYNC_WRITE     (2 << 0)
+ #define DMA_BUF_SYNC_RW        (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
++#define DMA_BUF_SYNC_START     (0 << 2)
++#define DMA_BUF_SYNC_END       (1 << 2)
+ 
+ /**
+  * Check whether DMA-BUF import/export from/to sync_file is available.
+@@ -32,4 +34,14 @@ bool dmabuf_import_sync_file(int dmabuf_fd, uint32_t flags, int sync_file_fd);
+  */
+ int dmabuf_export_sync_file(int dmabuf_fd, uint32_t flags);
+ 
++/**
++ * Bracket CPU access to a mapped DMA-BUF with DMA_BUF_IOCTL_SYNC.
++ *
++ * flags is DMA_BUF_SYNC_START or DMA_BUF_SYNC_END, combined with the access:
++ * DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE or both. Starting an access waits for
++ * the buffer's implicit fences. Returns false on error, for instance if the FD
++ * is not a DMA-BUF.
++ */
++bool dmabuf_sync_cpu_access(int dmabuf_fd, uint32_t flags);
++
+ #endif
+diff --git a/include/render/pixman.h b/include/render/pixman.h
+index 0984214..2d766c2 100644
+--- a/include/render/pixman.h
++++ b/include/render/pixman.h
+@@ -21,6 +21,9 @@ struct wlr_pixman_renderer {
+ 	struct wl_list textures; // wlr_pixman_texture.link
+ 
+ 	struct wlr_drm_format_set drm_formats;
++
++	int drm_fd; // -1 if none
++	struct wlr_drm_format_set dmabuf_texture_formats; // empty without drm_fd
+ };
+ 
+ struct wlr_pixman_buffer {
+@@ -38,12 +41,14 @@ struct wlr_pixman_texture {
+ 	struct wlr_pixman_renderer *renderer;
+ 	struct wl_list link; // wlr_pixman_renderer.textures
+ 
+-	pixman_image_t *image;
++	pixman_image_t *image; // NULL until first use if imported from a DMA-BUF
+ 	pixman_format_code_t format;
+ 	const struct wlr_pixel_format_info *format_info;
+ 
+ 	void *data; // if created via texture_from_pixels
+-	struct wlr_buffer *buffer; // if created via texture_from_buffer
++	struct wlr_buffer *buffer; // if created via texture_from_buffer from a data pointer
++	struct wlr_buffer *dmabuf_buffer; // if created via texture_from_buffer from a DMA-BUF
++	bool dmabuf_failed; // the DMA-BUF could not be converted, draw black
+ };
+ 
+ struct wlr_pixman_render_pass {
+@@ -58,7 +63,20 @@ const uint32_t *get_pixman_drm_formats(size_t *len);
+ bool begin_pixman_data_ptr_access(struct wlr_buffer *buffer, pixman_image_t **image_ptr,
+ 	uint32_t flags);
+ 
++/**
++ * Get a texture ready to sample: a texture imported from a DMA-BUF is converted
++ * on first use. Returns false if the texture cannot be sampled.
++ */
++bool pixman_texture_prepare(struct wlr_pixman_texture *texture);
++
+ struct wlr_pixman_render_pass *begin_pixman_render_pass(
+ 	struct wlr_pixman_buffer *buffer);
+ 
++/**
++ * Create a pixman renderer. If drm_fd is not negative, the renderer keeps a
++ * duplicate, which wlr_renderer_get_drm_fd() returns, and imports DMA-BUFs
++ * allocated for that DRM device.
++ */
++struct wlr_renderer *pixman_renderer_create_with_drm_fd(int drm_fd);
++
+ #endif
+diff --git a/include/render/pixman/nv12.h b/include/render/pixman/nv12.h
+new file mode 100644
+index 0000000..959ee75
+--- /dev/null
++++ b/include/render/pixman/nv12.h
+@@ -0,0 +1,44 @@
++#ifndef RENDER_PIXMAN_NV12_H
++#define RENDER_PIXMAN_NV12_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/**
++ * Convert an NV12 image (a Y plane, then a plane of interleaved U and V at half
++ * resolution in both directions, U first) to XRGB8888, with the BT.601 matrix
++ * and limited-range input (Y 16..235, U and V 16..240). Channels are rounded
++ * and clamped to 0..255, and X is written as 0xff.
++ *
++ * Strides are in bytes; dst_stride must be a multiple of 4. Only the
++ * width x height rectangle of dst is written. With an odd width or height, the
++ * last column or row uses the chroma sample of its 2x2 block.
++ *
++ * On aarch64 this uses NEON, and gives the same bytes as
++ * pixman_nv12_to_xrgb8888_c().
++ */
++void pixman_nv12_to_xrgb8888(const uint8_t *y, size_t y_stride,
++	const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++	int width, int height);
++
++/**
++ * The portable C implementation of pixman_nv12_to_xrgb8888(), and the reference
++ * for its vector one.
++ */
++void pixman_nv12_to_xrgb8888_c(const uint8_t *y, size_t y_stride,
++	const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++	int width, int height);
++
++/**
++ * pixman_nv12_to_xrgb8888() for source planes in uncached memory, such as a
++ * write-combined DMA-BUF mapping, where small loads are slow. Each Y row, and
++ * each UV row once for its two Y rows, is first copied into a cached line
++ * buffer, with 32-byte loads on aarch64. Returns false if the line buffer
++ * cannot be allocated.
++ */
++bool pixman_nv12_to_xrgb8888_staged(const uint8_t *y, size_t y_stride,
++	const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++	int width, int height);
++
++#endif
+diff --git a/render/dmabuf_fallback.c b/render/dmabuf_fallback.c
+index 820d46d..753408a 100644
+--- a/render/dmabuf_fallback.c
++++ b/render/dmabuf_fallback.c
+@@ -15,3 +15,8 @@ int dmabuf_export_sync_file(int dmabuf_fd, uint32_t flags) {
+ 	wlr_log(WLR_ERROR, "DMA-BUF sync_file export IOCTL not available on this system");
+ 	return false;
+ }
++
++bool dmabuf_sync_cpu_access(int dmabuf_fd, uint32_t flags) {
++	wlr_log(WLR_ERROR, "DMA-BUF sync IOCTL not available on this system");
++	return false;
++}
+diff --git a/render/dmabuf_linux.c b/render/dmabuf_linux.c
+index 53fb909..b93ab25 100644
+--- a/render/dmabuf_linux.c
++++ b/render/dmabuf_linux.c
+@@ -73,3 +73,14 @@ int dmabuf_export_sync_file(int dmabuf_fd, uint32_t flags) {
+ 	}
+ 	return data.fd;
+ }
++
++bool dmabuf_sync_cpu_access(int dmabuf_fd, uint32_t flags) {
++	struct dma_buf_sync data = {
++		.flags = flags,
++	};
++	if (drmIoctl(dmabuf_fd, DMA_BUF_IOCTL_SYNC, &data) != 0) {
++		wlr_log_errno(WLR_ERROR, "drmIoctl(SYNC) failed");
++		return false;
++	}
++	return true;
++}
+diff --git a/render/pixman/meson.build b/render/pixman/meson.build
+index dea96b0..c2f9e32 100644
+--- a/render/pixman/meson.build
++++ b/render/pixman/meson.build
+@@ -3,6 +3,7 @@ pixman = dependency('pixman-1', version: '>=0.46.0')
+ wlr_deps += pixman
+ 
+ wlr_files += files(
++	'nv12.c',
+ 	'pass.c',
+ 	'pixel_format.c',
+ 	'renderer.c',
+diff --git a/render/pixman/nv12.c b/render/pixman/nv12.c
+new file mode 100644
+index 0000000..7a2dfbd
+--- /dev/null
++++ b/render/pixman/nv12.c
+@@ -0,0 +1,188 @@
++#include <stdlib.h>
++#include <string.h>
++
++#include "render/pixman/nv12.h"
++
++#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__AARCH64EB__)
++#include <arm_neon.h>
++#define NV12_NEON 1
++#else
++#define NV12_NEON 0
++#endif
++
++// BT.601 (Kr = 0.299, Kb = 0.114) for limited-range input, in 16.16 fixed
++// point: Y - 16 is scaled by 255 / 219, U - 128 and V - 128 by 255 / 224.
++#define FIX_SHIFT 16
++static const int32_t fix_y = 76309; // 255 / 219
++static const int32_t fix_v_r = 104597; // 2 (1 - Kr) * 255 / 224
++static const int32_t fix_u_g = 25675; // 2 Kb (1 - Kb) / Kg * 255 / 224
++static const int32_t fix_v_g = 53279; // 2 Kr (1 - Kr) / Kg * 255 / 224
++static const int32_t fix_u_b = 132201; // 2 (1 - Kb) * 255 / 224
++
++// Round a 16.16 value to the nearest integer and clamp it to 0..255. Negative
++// values return early, so only non-negative ones are shifted.
++static inline uint32_t to_channel(int32_t v) {
++	if (v <= 0) {
++		return 0;
++	}
++	v = (v + (1 << (FIX_SHIFT - 1))) >> FIX_SHIFT;
++	return v > 255 ? 255 : (uint32_t)v;
++}
++
++static inline uint32_t to_xrgb8888(uint8_t y, int32_t r, int32_t g, int32_t b) {
++	int32_t luma = fix_y * (y - 16);
++	return 0xff000000 | (to_channel(luma + r) << 16) |
++		(to_channel(luma + g) << 8) | to_channel(luma + b);
++}
++
++// Pixels [col, width) of one row; col is even
++static void convert_row_c(const uint8_t *y_row, const uint8_t *uv_row,
++		uint32_t *dst_row, int col, int width) {
++	// One U, V pair per two pixels of the row
++	for (; col < width; col += 2) {
++		int32_t u = uv_row[col] - 128;
++		int32_t v = uv_row[col + 1] - 128;
++		int32_t r = fix_v_r * v;
++		int32_t g = -fix_u_g * u - fix_v_g * v;
++		int32_t b = fix_u_b * u;
++
++		dst_row[col] = to_xrgb8888(y_row[col], r, g, b);
++		if (col + 1 < width) {
++			dst_row[col + 1] = to_xrgb8888(y_row[col + 1], r, g, b);
++		}
++	}
++}
++
++#if NV12_NEON
++// One channel of 4 pixels. vqrshrun_n_s32() rounds as to_channel() does,
++// (v + (1 << 15)) >> 16, and saturates to 0..65535; vqmovn_u16() in
++// channel16_neon() then saturates to 255. Together that is to_channel().
++static inline uint16x4_t channel4_neon(int32x4_t luma, int32x4_t chroma) {
++	return vqrshrun_n_s32(vaddq_s32(luma, chroma), FIX_SHIFT);
++}
++
++// One channel of 16 pixels; c_lo and c_hi hold the chroma term of the 8 U, V
++// pairs, each shared by two pixels
++static inline uint8x16_t channel16_neon(const int32x4_t luma[4],
++		int32x4_t c_lo, int32x4_t c_hi) {
++	uint16x8_t lo = vcombine_u16(
++		channel4_neon(luma[0], vzip1q_s32(c_lo, c_lo)),
++		channel4_neon(luma[1], vzip2q_s32(c_lo, c_lo)));
++	uint16x8_t hi = vcombine_u16(
++		channel4_neon(luma[2], vzip1q_s32(c_hi, c_hi)),
++		channel4_neon(luma[3], vzip2q_s32(c_hi, c_hi)));
++	return vcombine_u8(vqmovn_u16(lo), vqmovn_u16(hi));
++}
++
++// Pixels [0, n) of one row, n the largest multiple of 16 not above width;
++// returns n
++static int convert_row_neon(const uint8_t *y_row, const uint8_t *uv_row,
++		uint32_t *dst_row, int width) {
++	int col = 0;
++	for (; col + 16 <= width; col += 16) {
++		uint8x16_t y8 = vld1q_u8(y_row + col);
++		uint8x8x2_t uv8 = vld2_u8(uv_row + col);
++
++		// Y - 16, U - 128 and V - 128: the wrapped 16-bit differences read
++		// as signed are exact
++		int16x8_t y_lo = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(y8), vdup_n_u8(16)));
++		int16x8_t y_hi = vreinterpretq_s16_u16(vsubl_high_u8(y8, vdupq_n_u8(16)));
++		int16x8_t u = vreinterpretq_s16_u16(vsubl_u8(uv8.val[0], vdup_n_u8(128)));
++		int16x8_t v = vreinterpretq_s16_u16(vsubl_u8(uv8.val[1], vdup_n_u8(128)));
++
++		int32x4_t luma[4] = {
++			vmulq_n_s32(vmovl_s16(vget_low_s16(y_lo)), fix_y),
++			vmulq_n_s32(vmovl_high_s16(y_lo), fix_y),
++			vmulq_n_s32(vmovl_s16(vget_low_s16(y_hi)), fix_y),
++			vmulq_n_s32(vmovl_high_s16(y_hi), fix_y),
++		};
++		int32x4_t u_lo = vmovl_s16(vget_low_s16(u)), u_hi = vmovl_high_s16(u);
++		int32x4_t v_lo = vmovl_s16(vget_low_s16(v)), v_hi = vmovl_high_s16(v);
++
++		uint8x16x4_t bgrx = {{
++			channel16_neon(luma, vmulq_n_s32(u_lo, fix_u_b),
++				vmulq_n_s32(u_hi, fix_u_b)),
++			channel16_neon(luma,
++				vmlsq_n_s32(vmulq_n_s32(u_lo, -fix_u_g), v_lo, fix_v_g),
++				vmlsq_n_s32(vmulq_n_s32(u_hi, -fix_u_g), v_hi, fix_v_g)),
++			channel16_neon(luma, vmulq_n_s32(v_lo, fix_v_r),
++				vmulq_n_s32(v_hi, fix_v_r)),
++			vdupq_n_u8(0xff),
++		}};
++		// XRGB8888 is B, G, R, X in memory
++		vst4q_u8((uint8_t *)(dst_row + col), bgrx);
++	}
++	return col;
++}
++#endif
++
++void pixman_nv12_to_xrgb8888_c(const uint8_t *y, size_t y_stride,
++		const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++		int width, int height) {
++	for (int row = 0; row < height; row++) {
++		convert_row_c(y + (size_t)row * y_stride,
++			uv + (size_t)(row / 2) * uv_stride,
++			(uint32_t *)((uint8_t *)dst + (size_t)row * dst_stride), 0, width);
++	}
++}
++
++void pixman_nv12_to_xrgb8888(const uint8_t *y, size_t y_stride,
++		const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++		int width, int height) {
++#if NV12_NEON
++	for (int row = 0; row < height; row++) {
++		const uint8_t *y_row = y + (size_t)row * y_stride;
++		const uint8_t *uv_row = uv + (size_t)(row / 2) * uv_stride;
++		uint32_t *dst_row = (uint32_t *)((uint8_t *)dst + (size_t)row * dst_stride);
++		int col = convert_row_neon(y_row, uv_row, dst_row, width);
++		convert_row_c(y_row, uv_row, dst_row, col, width);
++	}
++#else
++	pixman_nv12_to_xrgb8888_c(y, y_stride, uv, uv_stride, dst, dst_stride,
++		width, height);
++#endif
++}
++
++// Copy n bytes out of uncached memory. On the Cortex-A53, 32-byte load pairs
++// (ldp q) read write-combined memory about 1.4 times as fast as memcpy() and
++// twice as fast as single 16-byte loads.
++static void copy_uncached(uint8_t *restrict dst, const uint8_t *restrict src,
++		size_t n) {
++#if NV12_NEON
++	for (; n >= 32; n -= 32, src += 32, dst += 32) {
++		uint8x16_t a = vld1q_u8(src);
++		uint8x16_t b = vld1q_u8(src + 16);
++		vst1q_u8(dst, a);
++		vst1q_u8(dst + 16, b);
++	}
++#endif
++	memcpy(dst, src, n);
++}
++
++bool pixman_nv12_to_xrgb8888_staged(const uint8_t *y, size_t y_stride,
++		const uint8_t *uv, size_t uv_stride, uint32_t *dst, size_t dst_stride,
++		int width, int height) {
++	// Two Y rows, then the UV row they share
++	size_t y_len = (size_t)width;
++	size_t uv_len = ((size_t)width + 1) / 2 * 2;
++	uint8_t *line = malloc(2 * y_len + uv_len);
++	if (line == NULL) {
++		return false;
++	}
++	uint8_t *uv_line = line + 2 * y_len;
++
++	for (int row = 0; row < height; row += 2) {
++		int rows = height - row < 2 ? 1 : 2;
++		for (int i = 0; i < rows; i++) {
++			copy_uncached(line + i * y_len, y + (size_t)(row + i) * y_stride, y_len);
++		}
++		copy_uncached(uv_line, uv + (size_t)(row / 2) * uv_stride, uv_len);
++
++		pixman_nv12_to_xrgb8888(line, y_len, uv_line, 0,
++			(uint32_t *)((uint8_t *)dst + (size_t)row * dst_stride), dst_stride,
++			width, rows);
++	}
++
++	free(line);
++	return true;
++}
+diff --git a/render/pixman/pass.c b/render/pixman/pass.c
+index d3ee17d..641a81f 100644
+--- a/render/pixman/pass.c
++++ b/render/pixman/pass.c
+@@ -26,6 +26,9 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
+ 	return true;
+ }
+ 
++static void render_pass_add_rect(struct wlr_render_pass *wlr_pass,
++	const struct wlr_render_rect_options *options);
++
+ static pixman_op_t get_pixman_blending(enum wlr_render_blend_mode mode) {
+ 	switch (mode) {
+ 	case WLR_RENDER_BLEND_MODE_PREMULTIPLIED:
+@@ -42,6 +45,20 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
+ 	struct wlr_pixman_texture *texture = get_texture(options->texture);
+ 	struct wlr_pixman_buffer *buffer = pass->buffer;
+ 
++	if (!pixman_texture_prepare(texture)) {
++		// Only an NV12 DMA-BUF that failed to convert gets here. NV12 is opaque,
++		// so wlr_scene drew nothing under it: fill its area with black rather
++		// than leave what the buffer held before.
++		struct wlr_box box;
++		wlr_render_texture_options_get_dst_box(options, &box);
++		render_pass_add_rect(wlr_pass, &(struct wlr_render_rect_options){
++			.box = box,
++			.color = { .a = wlr_render_texture_options_get_alpha(options) },
++			.clip = options->clip,
++			.blend_mode = options->blend_mode,
++		});
++		return;
++	}
+ 	if (texture->buffer != NULL && !begin_pixman_data_ptr_access(texture->buffer,
+ 			&texture->image, WLR_BUFFER_DATA_PTR_ACCESS_READ)) {
+ 		return;
+diff --git a/render/pixman/renderer.c b/render/pixman/renderer.c
+index 4631a33..56cfd7a 100644
+--- a/render/pixman/renderer.c
++++ b/render/pixman/renderer.c
+@@ -1,13 +1,19 @@
+ #include <assert.h>
+ #include <drm_fourcc.h>
++#include <fcntl.h>
+ #include <pixman.h>
+ #include <stdlib.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ #include <wayland-util.h>
+ #include <wlr/render/interface.h>
+ #include <wlr/util/box.h>
+ #include <wlr/util/log.h>
+ 
++#include "render/dmabuf.h"
+ #include "render/pixman.h"
++#include "render/pixman/nv12.h"
+ #include "types/wlr_buffer.h"
+ 
+ static const struct wlr_renderer_impl renderer_impl;
+@@ -83,8 +89,11 @@ static struct wlr_pixman_texture *get_texture(
+ static void texture_destroy(struct wlr_texture *wlr_texture) {
+ 	struct wlr_pixman_texture *texture = get_texture(wlr_texture);
+ 	wl_list_remove(&texture->link);
+-	pixman_image_unref(texture->image);
++	if (texture->image != NULL) {
++		pixman_image_unref(texture->image);
++	}
+ 	wlr_buffer_unlock(texture->buffer);
++	wlr_buffer_unlock(texture->dmabuf_buffer);
+ 	free(texture->data);
+ 	free(texture);
+ }
+@@ -92,6 +101,9 @@ static void texture_destroy(struct wlr_texture *wlr_texture) {
+ static bool texture_read_pixels(struct wlr_texture *wlr_texture,
+ 		const struct wlr_texture_read_pixels_options *options) {
+ 	struct wlr_pixman_texture *texture = get_texture(wlr_texture);
++	if (!pixman_texture_prepare(texture)) {
++		return false;
++	}
+ 
+ 	struct wlr_box src;
+ 	wlr_texture_read_pixels_options_get_src_box(options, wlr_texture, &src);
+@@ -117,9 +129,7 @@ static bool texture_read_pixels(struct wlr_texture *wlr_texture,
+ 
+ static uint32_t pixman_texture_preferred_read_format(struct wlr_texture *wlr_texture) {
+ 	struct wlr_pixman_texture *texture = get_texture(wlr_texture);
+-
+-	pixman_format_code_t pixman_format = pixman_image_get_format(texture->image);
+-	return get_drm_format_from_pixman(pixman_format);
++	return get_drm_format_from_pixman(texture->format);
+ }
+ 
+ static const struct wlr_texture_impl texture_impl = {
+@@ -198,6 +208,8 @@ static const struct wlr_drm_format_set *pixman_get_texture_formats(
+ 	struct wlr_pixman_renderer *renderer = get_renderer(wlr_renderer);
+ 	if (buffer_caps & WLR_BUFFER_CAP_DATA_PTR) {
+ 		return &renderer->drm_formats;
++	} else if ((buffer_caps & WLR_BUFFER_CAP_DMABUF) && renderer->drm_fd >= 0) {
++		return &renderer->dmabuf_texture_formats;
+ 	} else {
+ 		return NULL;
+ 	}
+@@ -241,6 +253,162 @@ static struct wlr_pixman_texture *pixman_texture_create(
+ 	return texture;
+ }
+ 
++/*
++ * pixman cannot sample YCbCr, so a texture imported from an NV12 DMA-BUF holds
++ * an x8r8g8b8 copy of it, converted the first time the texture is drawn or
++ * read. Until then the DMA-BUF is not even mapped. A buffer the output scans
++ * out directly is never drawn (wlr_scene returns before rendering anything),
++ * so it is converted only if something reads it back, such as screencopy.
++ *
++ * A texture is converted at most once and never goes stale: the pixman texture
++ * has no update_from_buffer, so wlr_client_buffer_apply_damage() fails and
++ * surface_apply_damage() creates a new client buffer, and with it a new
++ * texture, for every commit that attaches a buffer, even the same wl_buffer
++ * again.
++ */
++
++static struct wlr_texture *pixman_texture_from_dmabuf(
++		struct wlr_pixman_renderer *renderer, struct wlr_buffer *buffer,
++		const struct wlr_dmabuf_attributes *attribs) {
++	if (!wlr_drm_format_set_has(&renderer->dmabuf_texture_formats,
++			attribs->format, attribs->modifier)) {
++		wlr_log(WLR_DEBUG, "Unsupported DMA-BUF format 0x%"PRIX32
++			" with modifier 0x%"PRIX64, attribs->format, attribs->modifier);
++		return NULL;
++	}
++
++	// NV12: a Y plane, then a plane of U, V pairs, one pair per 2x2 block
++	if (attribs->n_planes != 2 || attribs->width <= 0 || attribs->height <= 0 ||
++			attribs->stride[0] < (uint32_t)attribs->width ||
++			attribs->stride[1] < ((uint32_t)attribs->width + 1) / 2 * 2) {
++		wlr_log(WLR_ERROR, "Invalid NV12 DMA-BUF layout");
++		return NULL;
++	}
++
++	struct wlr_pixman_texture *texture = pixman_texture_create(renderer,
++		DRM_FORMAT_XRGB8888, attribs->width, attribs->height);
++	if (texture == NULL) {
++		return NULL;
++	}
++
++	texture->dmabuf_buffer = wlr_buffer_lock(buffer);
++
++	return &texture->wlr_texture;
++}
++
++// The end of a plane's last row, counted from the start of its FD
++static bool dmabuf_plane_end(const struct wlr_dmabuf_attributes *attribs,
++		int plane, uint32_t rows, uint32_t row_len, size_t *end) {
++	uint64_t len = (uint64_t)attribs->offset[plane] +
++		(uint64_t)attribs->stride[plane] * (rows - 1) + row_len;
++	if (len > SIZE_MAX) {
++		wlr_log(WLR_ERROR, "DMA-BUF plane %d is too large to map", plane);
++		return false;
++	}
++	*end = (size_t)len;
++	return true;
++}
++
++static bool same_file(int a, int b) {
++	struct stat sa, sb;
++	return fstat(a, &sa) == 0 && fstat(b, &sb) == 0 &&
++		sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
++}
++
++static bool convert_nv12_dmabuf(struct wlr_pixman_texture *texture) {
++	struct wlr_dmabuf_attributes attribs;
++	if (!wlr_buffer_get_dmabuf(texture->dmabuf_buffer, &attribs)) {
++		wlr_log(WLR_ERROR, "Failed to get DMA-BUF attributes");
++		return false;
++	}
++
++	uint32_t width = attribs.width, height = attribs.height;
++	size_t ends[2];
++	if (!dmabuf_plane_end(&attribs, 0, height, width, &ends[0]) ||
++			!dmabuf_plane_end(&attribs, 1, (height + 1) / 2,
++				(width + 1) / 2 * 2, &ends[1])) {
++		return false;
++	}
++
++	// Both planes are often in one DMA-BUF, under two FDs: map and sync it once
++	int n_files = same_file(attribs.fd[0], attribs.fd[1]) ? 1 : 2;
++	if (n_files == 1 && ends[1] > ends[0]) {
++		ends[0] = ends[1];
++	}
++
++	void *maps[2] = { NULL, NULL };
++	int synced = 0;
++	bool ok = false;
++
++	// From the start of the FD to the end of the last row. The kernel refuses
++	// to map past the end of a DMA-BUF.
++	for (int i = 0; i < n_files; i++) {
++		void *addr = mmap(NULL, ends[i], PROT_READ, MAP_SHARED, attribs.fd[i], 0);
++		if (addr == MAP_FAILED) {
++			wlr_log_errno(WLR_ERROR, "Failed to map DMA-BUF plane %d", i);
++			goto out;
++		}
++		maps[i] = addr;
++	}
++
++	// Waits for the buffer's implicit fences. It also refuses an FD that is not
++	// a DMA-BUF: a memfd, say, could shrink under the mapping mid-read.
++	for (; synced < n_files; synced++) {
++		if (!dmabuf_sync_cpu_access(attribs.fd[synced],
++				DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)) {
++			goto out;
++		}
++	}
++
++	texture->image = pixman_image_create_bits_no_clear(texture->format,
++		width, height, NULL, 0);
++	if (texture->image == NULL) {
++		wlr_log(WLR_ERROR, "Failed to create pixman image");
++		goto out;
++	}
++
++	// DMA-BUF mappings are often uncached (write-combined), where reading byte
++	// by byte is slow: the staged converter copies whole rows out first
++	ok = pixman_nv12_to_xrgb8888_staged(
++		(const uint8_t *)maps[0] + attribs.offset[0], attribs.stride[0],
++		(const uint8_t *)maps[n_files - 1] + attribs.offset[1], attribs.stride[1],
++		pixman_image_get_data(texture->image),
++		pixman_image_get_stride(texture->image), width, height);
++	if (!ok) {
++		wlr_log(WLR_ERROR, "Failed to allocate NV12 line buffer");
++		pixman_image_unref(texture->image);
++		texture->image = NULL;
++	}
++
++out:
++	for (int i = 0; i < synced; i++) {
++		dmabuf_sync_cpu_access(attribs.fd[i], DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
++	}
++	for (int i = 0; i < n_files; i++) {
++		if (maps[i] != NULL) {
++			munmap(maps[i], ends[i]);
++		}
++	}
++	return ok;
++}
++
++bool pixman_texture_prepare(struct wlr_pixman_texture *texture) {
++	if (texture->image != NULL) {
++		return true;
++	}
++	if (texture->dmabuf_buffer == NULL || texture->dmabuf_failed) {
++		return false;
++	}
++
++	if (!convert_nv12_dmabuf(texture)) {
++		// Do not try again on every frame. This holds until the next commit
++		// that attaches a buffer, which brings a new texture.
++		texture->dmabuf_failed = true;
++		return false;
++	}
++	return true;
++}
++
+ static struct wlr_texture *pixman_texture_from_buffer(
+ 		struct wlr_renderer *wlr_renderer, struct wlr_buffer *buffer) {
+ 	struct wlr_pixman_renderer *renderer = get_renderer(wlr_renderer);
+@@ -250,6 +418,10 @@ static struct wlr_texture *pixman_texture_from_buffer(
+ 	size_t stride;
+ 	if (!wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+ 			&data, &drm_format, &stride)) {
++		struct wlr_dmabuf_attributes attribs;
++		if (wlr_buffer_get_dmabuf(buffer, &attribs)) {
++			return pixman_texture_from_dmabuf(renderer, buffer, &attribs);
++		}
+ 		return NULL;
+ 	}
+ 	wlr_buffer_end_data_ptr_access(buffer);
+@@ -288,10 +460,20 @@ static void pixman_destroy(struct wlr_renderer *wlr_renderer) {
+ 	}
+ 
+ 	wlr_drm_format_set_finish(&renderer->drm_formats);
++	wlr_drm_format_set_finish(&renderer->dmabuf_texture_formats);
++
++	if (renderer->drm_fd >= 0) {
++		close(renderer->drm_fd);
++	}
+ 
+ 	free(renderer);
+ }
+ 
++static int pixman_get_drm_fd(struct wlr_renderer *wlr_renderer) {
++	struct wlr_pixman_renderer *renderer = get_renderer(wlr_renderer);
++	return renderer->drm_fd;
++}
++
+ static struct wlr_render_pass *pixman_begin_buffer_pass(struct wlr_renderer *wlr_renderer,
+ 		struct wlr_buffer *wlr_buffer, const struct wlr_buffer_pass_options *options) {
+ 	struct wlr_pixman_renderer *renderer = get_renderer(wlr_renderer);
+@@ -316,10 +498,11 @@ static const struct wlr_renderer_impl renderer_impl = {
+ 	.get_render_formats = pixman_get_render_formats,
+ 	.texture_from_buffer = pixman_texture_from_buffer,
+ 	.destroy = pixman_destroy,
++	.get_drm_fd = pixman_get_drm_fd,
+ 	.begin_buffer_pass = pixman_begin_buffer_pass,
+ };
+ 
+-struct wlr_renderer *wlr_pixman_renderer_create(void) {
++struct wlr_renderer *pixman_renderer_create_with_drm_fd(int drm_fd) {
+ 	struct wlr_pixman_renderer *renderer = calloc(1, sizeof(*renderer));
+ 	if (renderer == NULL) {
+ 		return NULL;
+@@ -341,9 +524,34 @@ struct wlr_renderer *wlr_pixman_renderer_create(void) {
+ 			DRM_FORMAT_MOD_LINEAR);
+ 	}
+ 
++	renderer->drm_fd = -1;
++	if (drm_fd >= 0) {
++		renderer->drm_fd = fcntl(drm_fd, F_DUPFD_CLOEXEC, 0);
++		if (renderer->drm_fd < 0) {
++			wlr_log_errno(WLR_ERROR, "fcntl(F_DUPFD_CLOEXEC) failed, "
++				"DMA-BUF import disabled");
++		}
++	}
++
++	// NV12 only, the format of video decoders and cameras, which a display
++	// plane may scan out directly. It is converted on the CPU only when it has
++	// to be composited. RGB formats would only lure clients off wl_shm onto
++	// the same CPU copy. The implicit modifier is taken as linear, as for the
++	// render formats.
++	if (renderer->drm_fd >= 0) {
++		wlr_drm_format_set_add(&renderer->dmabuf_texture_formats,
++			DRM_FORMAT_NV12, DRM_FORMAT_MOD_INVALID);
++		wlr_drm_format_set_add(&renderer->dmabuf_texture_formats,
++			DRM_FORMAT_NV12, DRM_FORMAT_MOD_LINEAR);
++	}
++
+ 	return &renderer->wlr_renderer;
+ }
+ 
++struct wlr_renderer *wlr_pixman_renderer_create(void) {
++	return pixman_renderer_create_with_drm_fd(-1);
++}
++
+ pixman_image_t *wlr_pixman_renderer_get_buffer_image(
+ 		struct wlr_renderer *wlr_renderer, struct wlr_buffer *wlr_buffer) {
+ 	struct wlr_pixman_renderer *renderer = get_renderer(wlr_renderer);
+@@ -359,5 +567,8 @@ pixman_image_t *wlr_pixman_renderer_get_buffer_image(
+ 
+ pixman_image_t *wlr_pixman_texture_get_image(struct wlr_texture *wlr_texture) {
+ 	struct wlr_pixman_texture *texture = get_texture(wlr_texture);
++	if (!pixman_texture_prepare(texture)) {
++		return NULL;
++	}
+ 	return texture->image;
+ }
+diff --git a/render/wlr_renderer.c b/render/wlr_renderer.c
+index e65314c..92f4bc7 100644
+--- a/render/wlr_renderer.c
++++ b/render/wlr_renderer.c
+@@ -25,6 +25,7 @@
+ #include <wlr/render/vulkan.h>
+ #endif // WLR_HAS_VULKAN_RENDERER
+ 
++#include "render/pixman.h"
+ #include "render/wlr_renderer.h"
+ #include "util/env.h"
+ 
+@@ -266,7 +267,11 @@ static struct wlr_renderer *renderer_autocreate(struct wlr_backend *backend, int
+ 	}
+ 
+ 	if ((is_auto && !has_render_node(backend)) || strcmp(renderer_name, "pixman") == 0) {
+-		renderer = wlr_pixman_renderer_create();
++		// The backend's DRM device is where clients allocate the DMA-BUFs the
++		// renderer imports. The multi-GPU blitter (no backend) gets none, so
++		// the DRM backend keeps refusing a pixman one (init_drm_renderer()).
++		int backend_drm_fd = backend != NULL ? wlr_backend_get_drm_fd(backend) : -1;
++		renderer = pixman_renderer_create_with_drm_fd(backend_drm_fd);
+ 		if (renderer) {
+ 			goto out;
+ 		} else {
+diff --git a/types/ext_image_capture_source_v1/base.c b/types/ext_image_capture_source_v1/base.c
+index eccbb28..b1bbcf0 100644
+--- a/types/ext_image_capture_source_v1/base.c
++++ b/types/ext_image_capture_source_v1/base.c
+@@ -122,9 +122,12 @@ bool wlr_ext_image_capture_source_v1_set_constraints_from_swapchain(struct wlr_e
+ 		source->shm_formats = shm_formats;
+ 	}
+ 
++	// The copy renders into the client's buffer, so the renderer must be able
++	// to render into a DMA-BUF
+ 	int drm_fd = wlr_renderer_get_drm_fd(renderer);
+ 	if (swapchain->allocator != NULL &&
+ 			(swapchain->allocator->buffer_caps & WLR_BUFFER_CAP_DMABUF) &&
++			(renderer->render_buffer_caps & WLR_BUFFER_CAP_DMABUF) &&
+ 			drm_fd >= 0) {
+ 		struct stat dev_stat;
+ 		if (fstat(drm_fd, &dev_stat) != 0) {
+diff --git a/types/wlr_screencopy_v1.c b/types/wlr_screencopy_v1.c
+index 9916a60..ed23d8f 100644
+--- a/types/wlr_screencopy_v1.c
++++ b/types/wlr_screencopy_v1.c
+@@ -556,8 +556,11 @@ static void capture_output(struct wl_client *wl_client,
+ 		goto error;
+ 	}
+ 
++	// The copy renders into the client's buffer, so the renderer must be able
++	// to render into a DMA-BUF
+ 	if (output->allocator &&
+-			(output->allocator->buffer_caps & WLR_BUFFER_CAP_DMABUF)) {
++			(output->allocator->buffer_caps & WLR_BUFFER_CAP_DMABUF) &&
++			(renderer->render_buffer_caps & WLR_BUFFER_CAP_DMABUF)) {
+ 		frame->dmabuf_format = output->render_format;
+ 	} else {
+ 		frame->dmabuf_format = DRM_FORMAT_INVALID;

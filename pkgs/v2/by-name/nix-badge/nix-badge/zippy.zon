@@ -1,0 +1,7 @@
+// Zippy configuration for nix-badge.
+.{
+    .lints = .{
+        // The fix-stub files are compiled inside fix's src/fetchers/, not here.
+        .dead_file = .{ .severity = .off },
+    },
+}

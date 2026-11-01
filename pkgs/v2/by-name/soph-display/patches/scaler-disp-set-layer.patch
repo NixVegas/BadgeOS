@@ -1,0 +1,101 @@
+vpss/scaler: export sclr_disp_set_layer()
+
+soph_drm flips the DISP video layer between packed RGB and NV12 with a
+plain plane update, so format, both plane addresses, both pitches and the
+input CSC have to reach the working bank at the same frame start. All of
+them are shadowed, and the shadow mask holds them back until it is
+cleared, so one masked write window is enough. The exported helpers cannot
+do it: sclr_disp_set_mem() unmasks between the pitches and the addresses,
+sclr_disp_set_cfg() calls it before masking for the format and CSC and also
+rewrites the output CSC, and sclr_disp_set_in_csc() is not exported.
+
+Export a setter that writes the whole input layer inside one mask window and
+leaves the output CSC alone, and declare it in scaler.h.
+
+Signed-off-by: badgeos
+---
+--- a/interdrv/vpss/chip/cv181x/scaler.c
++++ b/interdrv/vpss/chip/cv181x/scaler.c
+@@ -3451,6 +3451,71 @@
+ }
+ 
+ /**
++ * sclr_disp_set_layer - setup disp's input layer in one shadow window.
++ *
++ * Writes format, plane addresses, pitches, size, crop and the input CSC under
++ * a single shadow mask, so they all reach the working bank at the same frame
++ * start. sclr_disp_set_cfg() and sclr_disp_set_mem() unmask between their
++ * writes, so a frame start can land between a pitch and its address. The
++ * output CSC is left alone. Only works if disp from mem.
++ *
++ * @param fmt: input format
++ * @param mem: plane addresses, pitches, size and crop
++ * @param in_csc: input csc; SCL_CSC_NONE turns it off
++ */
++void sclr_disp_set_layer(enum sclr_format fmt, const struct sclr_mem *mem,
++			 enum sclr_csc in_csc)
++{
++	const struct sclr_csc_matrix *cfg;
++
++	if (in_csc >= SCL_CSC_MAX)
++		in_csc = SCL_CSC_NONE;
++
++	sclr_disp_reg_set_shadow_mask(true);
++
++	_reg_write_mask(reg_base + REG_SCL_DISP_CFG, 0x0000f000, fmt << 12);
++	_reg_write(reg_base + REG_SCL_DISP_OFFSET,
++		   (mem->start_y << 16) | mem->start_x);
++	_reg_write(reg_base + REG_SCL_DISP_SIZE,
++		   ((mem->height - 1) << 16) | (mem->width - 1));
++	_reg_write_mask(reg_base + REG_SCL_DISP_PITCH_Y, 0x00ffffff,
++			mem->pitch_y);
++	_reg_write(reg_base + REG_SCL_DISP_PITCH_C, mem->pitch_c);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR0_L, mem->addr0);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR0_H, mem->addr0 >> 32);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR1_L, mem->addr1);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR1_H, mem->addr1 >> 32);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR2_L, mem->addr2);
++	_reg_write(reg_base + REG_SCL_DISP_ADDR2_H, mem->addr2 >> 32);
++
++	if (in_csc == SCL_CSC_NONE) {
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC0, 0);
++	} else {
++		cfg = &csc_mtrx[in_csc];
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC1,
++			   (cfg->coef[1][0] << 16) | (cfg->coef[0][2]));
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC2,
++			   (cfg->coef[1][2] << 16) | (cfg->coef[1][1]));
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC3,
++			   (cfg->coef[2][1] << 16) | (cfg->coef[2][0]));
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC4, (cfg->coef[2][2]));
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC_SUB,
++			   (cfg->sub[2] << 16) | (cfg->sub[1] << 8) | cfg->sub[0]);
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC_ADD,
++			   (cfg->add[2] << 16) | (cfg->add[1] << 8) | cfg->add[0]);
++		_reg_write(reg_base + REG_SCL_DISP_IN_CSC0, BIT(31) |
++			   (cfg->coef[0][1] << 16) | (cfg->coef[0][0]));
++	}
++
++	sclr_disp_reg_set_shadow_mask(false);
++
++	g_disp_cfg.fmt = fmt;
++	g_disp_cfg.mem = *mem;
++	g_disp_cfg.in_csc = in_csc;
++}
++EXPORT_SYMBOL_GPL(sclr_disp_set_layer);
++
++/**
+  * sclr_disp_set_out_csc - setup disp's csc on output.
+  *
+  * @param csc: csc settings
+--- a/interdrv/vpss/chip/cv181x/scaler.h
++++ b/interdrv/vpss/chip/cv181x/scaler.h
+@@ -1191,6 +1191,8 @@
+ void sclr_disp_set_addr(u64 addr0, u64 addr1, u64 addr2);
+ void sclr_disp_set_csc(struct sclr_csc_matrix *cfg);
+ void sclr_disp_set_in_csc(enum sclr_csc csc);
++void sclr_disp_set_layer(enum sclr_format fmt, const struct sclr_mem *mem,
++			 enum sclr_csc in_csc);
+ void sclr_disp_set_out_csc(enum sclr_csc csc);
+ void sclr_disp_set_pattern(enum sclr_disp_pat_type type,
+ 			   enum sclr_disp_pat_color color, const u16 *rgb);

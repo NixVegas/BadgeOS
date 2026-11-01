@@ -1,0 +1,352 @@
+cvi_vc_drv: join the VDEC event-handler kthread before freeing the channel
+
+CVI_VDEC_DestroyChn() vfree()s the vdec_chn_context, and struct semaphore
+sem_getframe is *embedded* in that context.  vdec_event_handler(), the
+cvitask_vdec_%d kthread, spends its life asleep in down_timeout() on exactly
+that semaphore.  The join that should have made this safe was conditional:
+
+    if (IF_WANNA_DISABLE_BIND_MODE()) {      /* currBindMode && !enable_bind_mode */
+            ... kthread_stop(pVbCtx->thread) ...
+    }
+
+Both flags belong to sys_ctx_bind()/sys_ctx_unbind() in the sys module and
+describe the VDEC->VO *binding*, not the kthread.  enable_bind_mode is only
+cleared by an explicit CVI_SYS_UnBind(), so a producer that is stopped or
+killed without unbinding first destroys its channel with the flag still set,
+the test is false, the join is skipped -- and the MEM_FREE() a few lines below
+pulls the semaphore out from under a thread that is still sleeping on it.
+
+On badge #1 that skip is not a race, it is the only possible outcome, and this
+follows from the source alone: vdec_vb_ctx[] is a module global in cv181x_sys
+that holds whatever enable_bind_mode an earlier bind left in it, and our VO
+producer (scripts/badge_landscape_vo.c) runs with BLVO_BIND unset, so it calls
+neither CVI_SYS_Bind() nor CVI_SYS_UnBind().  The handler thread in the trace
+below can only have been started by IF_WANNA_ENABLE_BIND_MODE(), i.e. with the
+flag already set -- and with no process unbinding, nothing can clear it before
+the destroy.  Hence a skipped join on every teardown, which is exactly the
+reported "oopses on every systemctl stop/restart of the producer".
+
+  Unable to handle kernel paging request at virtual address ffff800084b7d620
+    FSC = 0x07: level 3 translation fault      (pte=0 -- the page is gone)
+    pc : _raw_spin_lock_irq+0x40/0x80
+    lr : __down_common+0x150/0x430
+  Call trace:
+    _raw_spin_lock_irq+0x40/0x80 (P)
+    __down_timeout+0x20/0x40
+    down_timeout+0x74/0xa8
+    vdec_event_handler+0x12c/0x3c0 [cvi_vc_driver]
+    kthread+0x134/0x150
+  CPU: 0 PID: 1858 Comm: cvitask_vdec_0
+  note: cvitask_vdec_0[1858] exited with irqs disabled
+  note: cvitask_vdec_0[1858] exited with preempt_count 1
+
+It faults inside the semaphore's own spinlock with interrupts already off, so
+the thread dies holding them: the box is degraded until it is rebooted.  On
+the badge this reproduces on every systemctl stop/restart of the VO producer.
+
+Tie the handler's lifetime to the channel instead of to the bind state:
+
+ * _cvi_vdec_stop_event_handler() -- claim pVbCtx->thread, up() the semaphore
+   to release a handler that is blocked right now, kthread_stop() to ask it to
+   stop and wait for it to return, then clear currBindMode.  Called
+   unconditionally from CVI_VDEC_DestroyChn() before any free.  Safe when no
+   thread was started and safe on a double destroy (the thread pointer is
+   taken first, and check_vdec_chn_handle() already rejects the second call).
+
+ * vdec_event_handler() re-checks kthread_should_stop() after every wait, and
+   before the wait inside the retry loop.  down_timeout() sleeps in
+   TASK_UNINTERRUPTIBLE, so kthread_stop()'s wakeup does not abort it; the
+   join is bounded by the existing one-second semaphore timeout.
+   The dead "pChnHandle == NULL -> channel destroyed" test it used to rely on
+   is replaced by a comment saying why it could never have fired: pChnHandle
+   is the thread's own local copy of the pointer, not the slot in
+   vdec_handle->chn_handle[].
+
+ * The handler no longer returns on its own.  kthread_create() takes no
+   reference on the task_struct it returns, so a kthread that leaves threadfn
+   is reaped and freed and the later kthread_stop() would itself be a
+   use-after-free; the two start-up failure paths now park until they are
+   stopped.
+
+ * CVI_VDEC_SendStream() only starts a handler when there is not one already
+   (pVbCtx->thread == NULL), and checks kthread_run() for IS_ERR before
+   storing the pointer or passing it to the scheduler.  Previously a failed
+   kthread_run() stored an ERR_PTR that the teardown path would then treat as
+   a thread, and a second bind-mode transition could strand a running handler.
+
+ * sema_init() moves to CVI_VDEC_CreateChn() so sem_getframe is valid for the
+   whole life of the channel rather than only from the first bind-mode
+   SendStream().  up() on the all-zero image MEM_CALLOC() (vzalloc) leaves
+   behind reads wait_list.next == NULL, concludes the list is not empty and
+   dereferences it.
+
+Not upstream: vendor tree (sophgo/osdrv @ aa542c41).
+--- a/interdrv/cvi_vc_drv/module/src/cvi_vdec.c
++++ b/interdrv/cvi_vc_drv/module/src/cvi_vdec.c
+@@ -728,10 +728,21 @@
+ 	MMF_CHN_S chn = {.enModId = CVI_ID_VDEC, .s32DevId = 0, .s32ChnId = 0};
+ 	struct vb_s *vb;
+ 
+-	CVI_VDEC_INFO("thread %d enter\n", VdecChn);
++	CVI_VDEC_INFO("thread enter\n");
+ 
+-	if (pChnHandle == NULL)
+-		return CVI_ERR_VDEC_NULL_PTR;
++	/*
++	 * This thread must never return of its own accord, only in answer to
++	 * kthread_should_stop().  kthread_create() takes no reference on the
++	 * task_struct it hands back, so a kthread that leaves its threadfn()
++	 * is reaped and freed; the kthread_stop() in CVI_VDEC_DestroyChn()
++	 * would then be a use-after-free of the task itself.  Every failure
++	 * path below therefore parks on WAIT_FOR_STOP instead of returning.
++	 * (VdecChn is not assigned yet above, hence no %d in that message.)
++	 */
++	if (pChnHandle == NULL) {
++		CVI_VDEC_ERR("vdec_event_handler: no channel context\n");
++		goto WAIT_FOR_STOP;
++	}
+ 
+ 	VdecChn = pChnHandle->VdChn;
+ 	pVbCtx = pChnHandle->pVbCtx;
+@@ -739,16 +750,21 @@
+ 	pBindFrmQueue = (VDEC_BIND_FRM_S *)MEM_MALLOC(sizeof(VDEC_BIND_FRM_S) * MAX_VDEC_FRM_NUM);
+ 	if (pBindFrmQueue == NULL) {
+ 		CVI_VDEC_ERR("no memory for pBindFrmQueue\n");
+-		return CVI_FAILURE;
++		goto WAIT_FOR_STOP;
+ 	}
+ 
+ 	memset(pBindFrmQueue, 0, sizeof(VDEC_BIND_FRM_S) * MAX_VDEC_FRM_NUM);
+ 
+ 	while (!kthread_should_stop()) {
+-		if (pChnHandle == NULL) {
+-			CVI_VDEC_WARN("vdec_event_handler: channel %d destroyed, exiting\n", VdecChn);
+-			break;
+-		}
++		/*
++		 * There used to be a "pChnHandle == NULL -> channel destroyed"
++		 * test here.  It never fired and could not: pChnHandle is this
++		 * thread's own local copy of the pointer, not the slot in
++		 * vdec_handle->chn_handle[], so it does not go NULL when the
++		 * channel is destroyed.  kthread_should_stop() is the real
++		 * guard -- CVI_VDEC_DestroyChn() joins us before it frees
++		 * anything we point at.
++		 */
+ 
+ 		//Check if frame free
+ 		for (i = 0; i < MAX_VDEC_FRM_NUM; i++) {
+@@ -764,6 +780,10 @@
+ 
+ 		while (((s32Ret = SEMA_TIMEWAIT(&pChnHandle->sem_getframe,
+ 						usecs_to_jiffies(1000 * 1000))) != 0)) {
++			// teardown outranks everything else
++			if (kthread_should_stop())
++				break;
++
+ 			// check if frame available
+ 			if (pChnHandle->stStatus.u32LeftPics > 0 || IF_WANNA_DISABLE_BIND_MODE())
+ 				break;
+@@ -772,6 +792,17 @@
+ 			continue;
+ 		}
+ 
++		/*
++		 * Re-check after every wait.  down_timeout() sleeps in
++		 * TASK_UNINTERRUPTIBLE, so kthread_stop()'s wakeup does not
++		 * abort it and we routinely come out of the wait with the
++		 * teardown already under way.  Nothing below may run then: the
++		 * destroyer is blocked in kthread_stop() and frees pChnHandle,
++		 * which is where sem_getframe lives, the moment we exit.
++		 */
++		if (kthread_should_stop())
++			break;
++
+ 		s32Ret = CVI_VDEC_GetFrame(VdecChn, &stVFrame, 100);
+ 		if (s32Ret == CVI_SUCCESS) {
+ 			if (_cvi_vdec_FindBlkInfo(pChnHandle, stVFrame.stVFrame.u64PhyAddr[0], &vbBLK, &frmIdx)
+@@ -813,6 +844,16 @@
+ 
+ 	CVI_VDEC_INFO("thread %d exit\n", VdecChn);
+ 	return CVI_SUCCESS;
++
++WAIT_FOR_STOP:
++	/*
++	 * Start-up failed.  Park until CVI_VDEC_DestroyChn() joins us rather
++	 * than returning -- see the comment at the top of this function.
++	 */
++	while (!kthread_should_stop())
++		schedule_timeout_interruptible(msecs_to_jiffies(20));
++
++	return CVI_FAILURE;
+ }
+ 
+ #define MAX_VDEC_DISPLAYQ_NUM 32
+@@ -872,6 +913,14 @@
+ 	MUTEX_INIT(&pChnHandle->status_lock, 0);
+ 	MUTEX_INIT(&pChnHandle->chnShmMutex, &ma);
+ 
++	/*
++	 * Give sem_getframe a real init for the whole life of the channel, not
++	 * only from the first bind-mode CVI_VDEC_SendStream() onwards: up() on
++	 * the all-zero image MEM_CALLOC() leaves behind sees a wait_list whose
++	 * ->next is NULL, decides the list is non-empty and dereferences it.
++	 */
++	SEMA_INIT(&pChnHandle->sem_getframe, 0, 0);
++
+ 	if (pChnHandle->ChnAttr.enType == PT_JPEG ||
+ 	    pChnHandle->ChnAttr.enType == PT_MJPEG) {
+ 	} else if (pChnHandle->ChnAttr.enType == PT_H264 ||
+@@ -917,12 +966,68 @@
+ 	return CVI_SUCCESS;
+ }
+ 
++/*
++ * Stop and join the channel's bind-mode event handler kthread, if one is
++ * running.
++ *
++ * vdec_event_handler() sleeps in down_timeout() on pChnHandle->sem_getframe,
++ * a struct semaphore embedded in the channel context, and CVI_VDEC_DestroyChn()
++ * vfree()s that context.  The thread therefore has to be *gone* -- joined, not
++ * merely asked to stop -- before the free, or it wakes up on a page that is no
++ * longer mapped:
++ *
++ *   Unable to handle kernel paging request at virtual address ffff800084b7d620
++ *     _raw_spin_lock_irq / __down_timeout / down_timeout
++ *     vdec_event_handler+0x12c/0x3c0 [cvi_vc_driver]
++ *   note: cvitask_vdec_0 exited with irqs disabled
++ *
++ * It faults inside the semaphore's own spinlock with interrupts off, so the
++ * thread never comes back and the machine stays degraded until it is rebooted.
++ *
++ * Safe to call when no thread was ever started, and safe to call twice.
++ */
++static void _cvi_vdec_stop_event_handler(vdec_chn_context *pChnHandle)
++{
++	struct cvi_vdec_vb_ctx *pVbCtx = pChnHandle->pVbCtx;
++	struct task_struct *thread;
++
++	if (pVbCtx == NULL)
++		return;
++
++	/*
++	 * Claim the thread first: a second destroy must not join it twice, and
++	 * CVI_VDEC_SendStream() must not adopt it again.
++	 */
++	thread = pVbCtx->thread;
++	pVbCtx->thread = NULL;
++
++	if (thread == NULL || IS_ERR(thread)) {
++		pVbCtx->currBindMode = CVI_FALSE;
++		return;
++	}
++
++	CVI_VDEC_INFO("stopping vdec thread for chn %d\n", pChnHandle->VdChn);
++
++	/*
++	 * Release a handler that is blocked right now, then ask it to stop and
++	 * wait for it to return.  The up() is not enough on its own and neither
++	 * is kthread_stop(): down_timeout() sleeps in TASK_UNINTERRUPTIBLE, so
++	 * kthread_stop()'s wakeup does not abort the wait.  The join is thus
++	 * bounded by that wait's one-second timeout, after which the handler
++	 * sees kthread_should_stop() and unwinds.
++	 */
++	SEMA_POST(&pChnHandle->sem_getframe);
++	kthread_stop(thread);
++
++	pVbCtx->currBindMode = CVI_FALSE;
++
++	CVI_VDEC_INFO("vdec thread stopped for chn %d\n", pChnHandle->VdChn);
++}
++
+ CVI_S32 CVI_VDEC_DestroyChn(VDEC_CHN VdChn)
+ {
+ 	CVI_S32 s32Ret = CVI_SUCCESS;
+-	struct cvi_vdec_vb_ctx *pVbCtx = NULL;
+ 	vdec_chn_context *pChnHandle = NULL;
+-	struct task_struct *thread_to_stop = NULL;
+ 
+ 	CVI_VDEC_API("\n");
+ 
+@@ -933,31 +1038,23 @@
+ 	}
+ 
+ 	pChnHandle = vdec_handle->chn_handle[VdChn];
+-	pVbCtx = pChnHandle->pVbCtx;
+-
+-	if (IF_WANNA_DISABLE_BIND_MODE()) {
+-		SEMA_POST(&pChnHandle->sem_getframe);
+-		thread_to_stop = pVbCtx->thread;
+-		if (thread_to_stop && !IS_ERR(thread_to_stop)) {
+-			CVI_VDEC_INFO("Stopping vdec thread for chn %d\n", VdChn);
+-			// Signal the thread to stop by changing the bind mode flag
+-			// The thread will check IF_WANNA_DISABLE_BIND_MODE() and exit gracefully
+-			pVbCtx->enable_bind_mode = CVI_FALSE;
+-
+-			// Wait for thread to exit completely
+-			// kthread_stop() is synchronous and waits for thread function to return
+-			s32Ret = kthread_stop(thread_to_stop);
+-			if (s32Ret < 0) {
+-				CVI_VDEC_WARN("kthread_stop returned %d for chn %d\n", s32Ret, VdChn);
+-			}
+ 
+-			pVbCtx->thread = NULL;
+-			pVbCtx->currBindMode = CVI_FALSE;
+-			CVI_VDEC_INFO("vdec thread stopped for chn %d\n", VdChn);
+-		}
+-
+-		SEMA_DESTROY(&pChnHandle->sem_getframe);
+-	}
++	/*
++	 * Unconditionally, before anything below frees the channel.
++	 *
++	 * This used to be done only under IF_WANNA_DISABLE_BIND_MODE(), i.e.
++	 * only when currBindMode was still set and enable_bind_mode had already
++	 * been cleared.  Those two flags belong to sys_ctx_bind()/
++	 * sys_ctx_unbind() and say nothing about whether our kthread is alive:
++	 * a producer that is destroyed without unbinding first (any process
++	 * that exits, or is stopped, without calling CVI_SYS_UnBind) leaves
++	 * enable_bind_mode set, the test was false, the join was skipped, and
++	 * the MEM_FREE() below pulled sem_getframe out from under a thread
++	 * still sleeping in down_timeout() on it.  The handler's lifetime is a
++	 * property of the channel, not of the bind state.
++	 */
++	_cvi_vdec_stop_event_handler(pChnHandle);
++	SEMA_DESTROY(&pChnHandle->sem_getframe);
+ 
+ 	if (pChnHandle->ChnAttr.enType == PT_H264 ||
+ 	    pChnHandle->ChnAttr.enType == PT_H265) {
+@@ -1122,16 +1219,32 @@
+ 
+ 	cviGetDebugConfigFromDecProc();
+ 
+-	if (IF_WANNA_ENABLE_BIND_MODE()) {
++	/*
++	 * pVbCtx->thread == NULL is part of the condition: the flags alone do
++	 * not tell us whether a handler is already running, and a second
++	 * kthread_run() would strand the first one on a context that only one
++	 * of them can be joined against.  kthread_run() can also fail, and the
++	 * ERR_PTR it returns must not be stored or handed to the scheduler.
++	 */
++	if (IF_WANNA_ENABLE_BIND_MODE() && pVbCtx->thread == NULL) {
+ 		struct sched_param param = {
+ 			.sched_priority = 95,
+ 		};
++		struct task_struct *thread;
+ 
+ 		SEMA_INIT(&pChnHandle->sem_getframe, 0, 0);
+ 
+ 		pVbCtx->currBindMode = CVI_TRUE;
+-		pVbCtx->thread = kthread_run(vdec_event_handler,
++		thread = kthread_run(vdec_event_handler,
+ 				(CVI_VOID *) pChnHandle, "cvitask_vdec_%d", VdChn);
++		if (IS_ERR(thread)) {
++			CVI_VDEC_ERR("kthread_run cvitask_vdec_%d, %ld\n",
++				     VdChn, PTR_ERR(thread));
++			pVbCtx->currBindMode = CVI_FALSE;
++			return CVI_FAILURE;
++		}
++
++		pVbCtx->thread = thread;
+ 		sched_setscheduler(pVbCtx->thread, SCHED_RR, &param);
+ 	}
+ 

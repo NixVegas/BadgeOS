@@ -1,0 +1,38 @@
+# The badge's NixOS configuration, on either core. The flake sets the platform and the
+# package overlay; a host module (modules/hosts) adds what is particular to one badge.
+{
+  imports = [
+    ./common.nix
+    ./content.nix
+    ./hostname.nix
+    ./profiles.nix
+    ./kernel.nix
+    ./storage.nix
+    ./external-storage.nix
+    ./rauc.nix
+    ./install.nix
+    ./firmware.nix
+    ./deploy.nix
+    ./boot-image.nix
+    ./wifi.nix
+    ./net-scan.nix
+    ./lan.nix
+    ./router.nix
+    ./ipxe.nix
+    ./cache.nix
+    ./usb-gadget.nix
+    ./usb-role.nix
+    ./audio.nix
+    ./crossarch.nix
+    ./bling.nix
+    ./oled.nix
+    ./bootswap.nix
+    ./display.nix
+    ./graphics.nix
+    ./games.nix
+    ./desktop.nix
+    ./video.nix
+    ./options.nix
+    ./boards
+  ];
+}

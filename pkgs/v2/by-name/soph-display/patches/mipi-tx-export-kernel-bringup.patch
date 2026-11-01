@@ -1,0 +1,86 @@
+vo_mipi_tx: expose the DSI bring-up to other kernel modules
+
+Everything needed to raise the DSI link already lives in this file, but only
+behind the /dev/cvi-mipi-tx ioctl: SET_DEV_CFG programs the D-PHY lanes, the
+PLL, the DISP timing and the DSI MAC in one go, and ENABLE takes the MAC to HS
+video. Both helpers are static, so the only way to reach them is a userspace
+tool poking the device node at the right moment.
+
+That is why this board has needed a `dsiup` binary run by hand (or by a boot
+script) before anything can drive the display, and why our KMS driver has had
+to read back a mode somebody else programmed rather than program its own. A
+driver that owns an output has to be able to bring its own link up.
+
+Export exactly those two steps and nothing else. No new ioctl, no change to
+any existing path: a module-scope handle is recorded in probe alongside the
+drvdata that is already stored there, and the two new symbols call the same
+static helpers the ioctl calls.
+
+Signed-off-by: badgeos
+---
+--- a/interdrv/vo/chip/cv181x/vo_mipi_tx.c	2026-09-18 19:10:45.568601227 -0700
++++ b/interdrv/vo/chip/cv181x/vo_mipi_tx.c	2026-09-18 19:11:05.533284810 -0700
+@@ -294,6 +294,9 @@
+ 	return ret;
+ }
+ 
++/* Set at probe; the handle soph_mipi_tx_setup() works through. */
++static struct cvi_vip_mipi_tx_dev *soph_mipi_tx_dev;
++
+ static void mipi_tx_enable(void)
+ {
+ 	sclr_dsi_set_mode(SCLR_DSI_MODE_HS);
+@@ -343,6 +346,45 @@
+ 	return 0;
+ }
+ 
++/*
++ * In-kernel DSI bring-up, for a KMS driver in this same tree.
++ *
++ * Everything needed to raise the DSI link already lives in this file, but only
++ * behind the /dev/cvi-mipi-tx ioctl: SET_DEV_CFG (D-PHY lanes + PLL, the DISP
++ * timing and the DSI MAC in one go) then ENABLE (MAC to HS video). Both
++ * helpers are static, so the only way to reach them has been a userspace tool
++ * poking the device node -- which means the display cannot come up without
++ * something running at the right moment, and a DRM driver that wants to own
++ * its output cannot.
++ *
++ * This exposes exactly those two steps to other modules and nothing else. It
++ * is deliberately not a new ioctl and changes no existing behaviour.
++ */
++int soph_mipi_tx_setup(const struct combo_dev_cfg_s *cfg)
++{
++	int rc;
++
++	if (!soph_mipi_tx_dev || !cfg)
++		return -ENODEV;
++
++	rc = mipi_tx_set_combo_dev_cfg(soph_mipi_tx_dev,
++				       (struct combo_dev_cfg_s *)cfg);
++	if (rc < 0)
++		return rc;
++
++	soph_mipi_tx_dev->dev_cfg = *cfg;
++	mipi_tx_enable();
++	return 0;
++}
++EXPORT_SYMBOL_GPL(soph_mipi_tx_setup);
++
++void soph_mipi_tx_teardown(void)
++{
++	if (soph_mipi_tx_dev)
++		mipi_tx_disable();
++}
++EXPORT_SYMBOL_GPL(soph_mipi_tx_teardown);
++
+ static long mipi_tx_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+ 	struct cvi_vip_mipi_tx_dev *tdev = file_mipi_tx_dev(file);
+@@ -772,6 +814,7 @@
+ 	dev_set_drvdata(&pdev->dev, tdev);
+ 	platform_set_drvdata(pdev, tdev);
+ 	tdev->dev = &pdev->dev;
++	soph_mipi_tx_dev = tdev;
+ 
+ 	_init_resources(pdev);
+ 

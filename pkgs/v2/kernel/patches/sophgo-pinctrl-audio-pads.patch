@@ -1,0 +1,88 @@
+pinctrl: sophgo: cv18xx: let audio and ethernet pads take a pin state
+
+cv1800_pinconf_compute_config() rejects IO_TYPE_ETH and IO_TYPE_AUDIO pads
+outright, before it looks at a single config parameter. That is correct in
+spirit -- those pads are declared with CV1800_FUNC_PIN, which sets no .conf
+member, so they genuinely have no pin-conf register -- but it makes them
+impossible to use at all, because of how the binding interacts with
+pinconf-generic:
+
+  * cv1800_dt_node_to_map_post() requires a power-source property and
+    -EINVALs the node without it;
+  * power-source is a generic pinconf parameter, so pinconf-generic always
+    emits a PIN_MAP_TYPE_CONFIGS_GROUP map for the group;
+  * that map reaches sophgo_pconf_group_set() -> the -ENOTSUPP above.
+
+So the pin state can neither omit power-source nor supply it. It always
+fails, pinctrl_bind_pins() fails with it, and the consumer device never
+probes. On a board that routes I2S to an HDMI bridge over the AUD_* pads,
+that is the difference between having audio and not.
+
+Fix it by moving the io-type test inside the loop, after an explicit skip
+for PIN_CONFIG_POWER_SOURCE -- which the switch below already treats as a
+no-op ("Ignore power source as it is always fixed"). A group carrying only
+the mandatory property now resolves to an empty mask instead of an error,
+while any pad-conf parameter that would actually need a register still
+returns -ENOTSUPP on these pads.
+
+Guard cv1800_set_pinconf_config() on that empty mask as well. It is not
+merely an optimisation: the read-modify-write is unconditional today, and
+for a CV1800_FUNC_PIN pad pin->conf is zeroed, so the computed address is
+offset 0 of the component rather than the pad's own register. Applying a
+no-op config would corrupt an unrelated pin.
+
+cv1800_pinconf_get() keeps its early return: it reads pin->conf directly
+and has no mask to gate on.
+
+--- a/drivers/pinctrl/sophgo/pinctrl-cv18xx.c
++++ b/drivers/pinctrl/sophgo/pinctrl-cv18xx.c
+@@ -325,13 +325,30 @@
+ 		return -EINVAL;
+ 
+ 	type = cv1800_pin_io_type(pin);
+-	if (type == IO_TYPE_ETH || type == IO_TYPE_AUDIO)
+-		return -ENOTSUPP;
+ 
+ 	for (i = 0; i < num_configs; i++) {
+ 		int param = pinconf_to_config_param(configs[i]);
+ 		u32 arg = pinconf_to_config_argument(configs[i]);
+ 
++		/*
++		 * power-source is mandatory -- cv1800_dt_node_to_map_post()
++		 * -EINVALs a node without it, and pinconf-generic then always
++		 * emits a CONFIGS_GROUP map -- but it is not a pad-conf bit.
++		 * Skip it BEFORE the io-type test below, or an audio pin group
++		 * carrying nothing but the mandatory property is rejected, its
++		 * pin state fails, and the consumer device never probes.
++		 */
++		if (param == PIN_CONFIG_POWER_SOURCE)
++			continue;
++
++		/*
++		 * ETH and AUDIO pads are CV1800_FUNC_PIN: they set no .conf
++		 * member, so there is no pin-conf register to program and any
++		 * REAL config genuinely is unsupported.
++		 */
++		if (type == IO_TYPE_ETH || type == IO_TYPE_AUDIO)
++			return -ENOTSUPP;
++
+ 		switch (param) {
+ 		case PIN_CONFIG_BIAS_PULL_DOWN:
+ 			FIELD_MODIFY(PIN_IO_PULLDOWN, &v, arg);
+@@ -388,6 +405,16 @@
+ 	void __iomem *addr;
+ 	u32 reg;
+ 
++	/*
++	 * A config that resolved to no bits must not touch hardware.
++	 * CV1800_FUNC_PIN leaves pin->conf zeroed, so for an ETH/AUDIO pad
++	 * the address below is not that pad's conf register -- it is
++	 * offset 0 of the component, and writing it would corrupt an
++	 * unrelated pin.
++	 */
++	if (!mask)
++		return 0;
++
+ 	addr = cv1800_pinctrl_get_component_addr(priv, &pin->conf);
+ 
+ 	reg = readl(addr);

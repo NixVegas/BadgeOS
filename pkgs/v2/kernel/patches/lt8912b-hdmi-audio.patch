@@ -1,0 +1,100 @@
+lontium-lt8912b: optional HDMI mode with I2S audio
+
+The bridge has a third I2C interface (0x4a) for audio over HDMI that the
+driver never registers, and it sets HDMI vs DVI output mode from the EDID
+on every modeset. On the badge a marginal link can misread the sink as DVI,
+which carries no audio. hdmi_audio=1 forces HDMI mode and programs the
+audio bank (I2S in, 16-bit 48 kHz, N=6144) as part of every video setup,
+so audio survives mode switches. Default 0 keeps upstream behaviour.
+
+Signed-off-by: badgeos
+---
+--- a/drivers/gpu/drm/bridge/lontium-lt8912b.c
++++ b/drivers/gpu/drm/bridge/lontium-lt8912b.c
+@@ -24,7 +24,10 @@
+ #define I2C_CEC_DSI 1
+ #define I2C_ADDR_CEC_DSI 0x49
+ 
+-#define I2C_MAX_IDX 2
++#define I2C_AUDIO 2
++#define I2C_ADDR_AUDIO 0x4a
++
++#define I2C_MAX_IDX 3
+ 
+ struct lt8912 {
+ 	struct device *dev;
+@@ -228,13 +231,10 @@
+ static int lt8912_init_i2c(struct lt8912 *lt, struct i2c_client *client)
+ {
+ 	unsigned int i;
+-	/*
+-	 * At this time we only initialize 2 chips, but the lt8912 provides
+-	 * a third interface for the audio over HDMI configuration.
+-	 */
+ 	struct i2c_board_info info[] = {
+ 		{ I2C_BOARD_INFO("lt8912p0", I2C_ADDR_MAIN), },
+ 		{ I2C_BOARD_INFO("lt8912p1", I2C_ADDR_CEC_DSI), },
++		{ I2C_BOARD_INFO("lt8912p2", I2C_ADDR_AUDIO), },
+ 	};
+ 
+ 	if (!lt)
+@@ -316,6 +316,13 @@
+  */
+ static int force_720p;
+ module_param(force_720p, int, 0644);
++
++/*
++ * Drive the HDMI link in HDMI (not DVI) mode with I2S audio, 48 kHz 16-bit, whatever
++ * the EDID says: a marginal link can misread the sink as DVI, and DVI has no audio.
++ */
++static bool hdmi_audio;
++module_param(hdmi_audio, bool, 0644);
+ MODULE_PARM_DESC(force_720p,
+ 		 "ignore the DRM mode and program the bridge for fixed 1280x720p60 (0 = use the mode)");
+ 
+@@ -389,7 +396,7 @@
+ 	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xab, BIT(1),
+ 				  hsync_activehigh ? BIT(1) : 0);
+ 	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xb2, BIT(0),
+-				  lt->connector.display_info.is_hdmi ? BIT(0) : 0);
++				  lt->connector.display_info.is_hdmi || hdmi_audio ? BIT(0) : 0);
+ 
+ 	return ret;
+ }
+@@ -410,6 +417,25 @@
+ 	return 0;
+ }
+ 
++static int lt8912_write_audio_config(struct lt8912 *lt)
++{
++	/* I2S in, unmuted; 16-bit 48 kHz; N = 6144; channel and audio enable. */
++	const struct reg_sequence seq[] = {
++		{0x34, 0xe2},
++		{0x3c, 0x60},
++		{0x0f, 0x28},
++		{0x35, 0x00},
++		{0x36, 0x18},
++		{0x37, 0x00},
++		{0x07, 0xf0},
++		{0x06, 0x08},
++	};
++
++	if (!hdmi_audio)
++		return 0;
++	return regmap_multi_reg_write(lt->regmap[I2C_AUDIO], seq, ARRAY_SIZE(seq));
++}
++
+ static int lt8912_video_on(struct lt8912 *lt)
+ {
+ 	int ret;
+@@ -430,6 +456,10 @@
+ 	if (ret < 0)
+ 		goto end;
+ 
++	ret = lt8912_write_audio_config(lt);
++	if (ret < 0)
++		goto end;
++
+ end:
+ 	return ret;
+ }

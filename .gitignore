@@ -4,11 +4,14 @@ build
 sdkconfig
 sdkconfig.old
 esp-idf
-!src/lib/esp-idf
+!pkgs/v1/nix-badge-v1/src/lib/esp-idf
 .zig-cache
 nvs.csv
 nvs.bin
-src/idf
+pkgs/v1/nix-badge-v1/src/idf
 managed_components
 result
 result-*
+fix-gc-repro/fix-src-instr/
+zig-out
+/.superpowers/

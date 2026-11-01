@@ -1,0 +1,48 @@
+vpss/scaler: export sclr_disp_frame_start_poll()
+
+soph_drm owns the DISP but not the shared VIP interrupt line (cv181x_vpss
+does), so it cannot take the DISP frame interrupts and has no way to know
+when the display crosses a frame boundary.
+
+A shadowed DISP register written with the shadow mask clear reaches the
+working bank by itself at the next frame start; a force_up applies it at
+once, mid-scan. So a page flip needs no trigger, only the knowledge of when
+the frame start that latched it has happened, which is when the old buffer
+stops being read.
+
+Export a poll of the raw DISP frame-start status (INTR_STATUS bit 0, cleared
+write-1-to-clear). It latches whether or not the interrupt is wanted, and
+nothing else on this board clears it. Frame-end (bit 1) is no use for this:
+the VIP interrupt handler clears it within microseconds.
+
+Signed-off-by: badgeos
+---
+--- a/interdrv/vpss/chip/cv181x/scaler.c
++++ b/interdrv/vpss/chip/cv181x/scaler.c
+@@ -1452,6 +1452,26 @@
+ }
+ 
+ /**
++ * sclr_disp_frame_start_poll - has the DISP started a frame since last poll?
++ *
++ * Reads the raw DISP frame-start status (INTR_STATUS bit 0) and clears it
++ * write-1-to-clear. A shadowed DISP register written before a frame start is
++ * live after it, so a driver that owns the DISP but not the VIP interrupt line
++ * can poll this to learn when a page flip has landed.
++ * Returns true exactly on the polls that observe a frame start.
++ */
++bool sclr_disp_frame_start_poll(void)
++{
++	u32 st = _reg_read(reg_base + REG_SCL_TOP_INTR_STATUS);
++
++	if (!(st & BIT(0)))
++		return false;
++	_reg_write(reg_base + REG_SCL_TOP_INTR_STATUS, BIT(0));
++	return true;
++}
++EXPORT_SYMBOL_GPL(sclr_disp_frame_start_poll);
++
++/**
+  * sclr_intr_status - sclr's interrupt status
+  *                    check 'union sclr_intr' for each bit mask
+  *

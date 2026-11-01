@@ -1,0 +1,99 @@
+--- a/modules/sys/src/devmem.c
++++ b/modules/sys/src/devmem.c
+@@ -1,12 +1,13 @@
+ /*
+- ** read/write phy addr in userspace
+- ** open /dev/mem
++ ** map ION memory by physical address in userspace
++ ** through /dev/soph-ion's dma-buf exporter
+  ** taiqiang.cao@bitmain.com
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
++#include <sys/ioctl.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #include <errno.h>
+@@ -15,16 +16,24 @@
+ #include <fcntl.h>
+ #include <ctype.h>
+ #include <inttypes.h>
++#include <soph_ion.h>
+ 
+ #include "devmem.h"
+ 
++/*
++ * Every address the middleware maps is an ION allocation (VB pools, decoder
++ * frames, RGN canvases), so it is mapped from a dma-buf of that allocation
++ * rather than from /dev/mem, which a STRICT_DEVMEM kernel refuses for RAM.
++ * A writable dma-buf map is write-combined, as an O_SYNC /dev/mem map of RAM
++ * was; there is no cached writable variant, so both opens are the same.
++ */
+ int devm_open(void)
+ {
+ 	int fd;
+ 
+-	fd = open("/dev/mem", O_RDWR | O_SYNC);
++	fd = open("/dev/soph-ion", O_RDWR | O_CLOEXEC);
+ 	if (fd == -1) {
+-		printf("cannot open '/dev/mem'\n");
++		printf("cannot open '/dev/soph-ion': %s\n", strerror(errno));
+ 		goto open_err;
+ 	}
+ 
+@@ -35,17 +44,7 @@
+ 
+ int devm_open_cached(void)
+ {
+-	int fd;
+-
+-	fd = open("/dev/mem", O_RDWR);
+-	if (fd == -1) {
+-		printf("cannot open '/dev/mem'\n");
+-		goto open_err;
+-	}
+-
+-	return fd;
+-open_err:
+-	return -1;
++	return devm_open();
+ }
+ 
+ void devm_close(int fd)
+@@ -56,15 +55,31 @@
+ 
+ void *devm_map(int fd, uint64_t phy_addr, size_t len)
+ {
++	struct soph_ion_export ex = { .phys = phy_addr, .flags = O_CLOEXEC };
+ 	off_t offset;
+ 	void *map_base;
+ 	uint32_t padding;
+ 
+-	offset = phy_addr & ~(sysconf(_SC_PAGE_SIZE) - 1);
+-	padding = phy_addr - offset;
++	if (ioctl(fd, SOPH_ION_IOC_EXPORT, &ex) == -1) {
++		printf("phy_addr = %#"PRIx64": /dev/soph-ion cannot export it (%s)\n",
++			phy_addr, strerror(errno));
++		goto mmap_err;
++	}
++
++	offset = ex.offset & ~(sysconf(_SC_PAGE_SIZE) - 1);
++	padding = ex.offset - offset;
++
++	if (len > ex.size - ex.offset) {
++		printf("phy_addr = %#"PRIx64", length = %zu\t: past the end of its %"PRIu64" B ION allocation\n",
++			phy_addr, len, (uint64_t)ex.size);
++		close(ex.fd);
++		goto mmap_err;
++	}
+ 
+ 	map_base = mmap(NULL, len + padding, PROT_READ | PROT_WRITE,
+-			MAP_SHARED, fd, offset);
++			MAP_SHARED, ex.fd, offset);
++	/* the mapping holds the dma-buf, and the dma-buf the allocation */
++	close(ex.fd);
+ 
+ 	if (map_base == MAP_FAILED) {
+ 		perror("mmap failed\n");

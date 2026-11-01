@@ -1,0 +1,3445 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 95f5526..5d1ef36 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -61,7 +61,7 @@ dependencies = [
+  "foldhash 0.1.5",
+  "futures-core",
+  "h2",
+- "http",
++ "http 0.2.12",
+  "httparse",
+  "httpdate",
+  "itoa",
+@@ -93,7 +93,7 @@ checksum = "14f8c75c51892f18d9c46150c5ac7beb81c95f78c8b83a634d49f4ca32551fe7"
+ dependencies = [
+  "bytestring",
+  "cfg-if",
+- "http",
++ "http 0.2.12",
+  "regex-lite",
+  "serde",
+  "tracing",
+@@ -237,6 +237,12 @@ dependencies = [
+  "cc",
+ ]
+ 
++[[package]]
++name = "allocator-api2"
++version = "0.2.21"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
++
+ [[package]]
+ name = "anes"
+ version = "0.1.6"
+@@ -295,12 +301,24 @@ dependencies = [
+  "syn",
+ ]
+ 
++[[package]]
++name = "atomic-waker"
++version = "1.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
++
+ [[package]]
+ name = "autocfg"
+ version = "1.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+ 
++[[package]]
++name = "base64"
++version = "0.22.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
++
+ [[package]]
+ name = "base64ct"
+ version = "1.8.3"
+@@ -420,6 +438,17 @@ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+ 
++[[package]]
++name = "chacha20"
++version = "0.10.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
++dependencies = [
++ "cfg-if",
++ "cpufeatures 0.3.0",
++ "rand_core 0.10.1",
++]
++
+ [[package]]
+ name = "ciborium"
+ version = "0.2.2"
+@@ -480,6 +509,9 @@ checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
+ dependencies = [
+  "bzip2",
+  "compression-core",
++ "liblzma",
++ "zstd",
++ "zstd-safe",
+ ]
+ 
+ [[package]]
+@@ -831,12 +863,27 @@ dependencies = [
+  "percent-encoding",
+ ]
+ 
++[[package]]
++name = "futures-channel"
++version = "0.3.32"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
++dependencies = [
++ "futures-core",
++]
++
+ [[package]]
+ name = "futures-core"
+ version = "0.3.32"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+ 
++[[package]]
++name = "futures-io"
++version = "0.3.32"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
++
+ [[package]]
+ name = "futures-macro"
+ version = "0.3.32"
+@@ -873,9 +920,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+ dependencies = [
+  "futures-core",
++ "futures-io",
+  "futures-macro",
+  "futures-sink",
+  "futures-task",
++ "memchr",
+  "pin-project-lite",
+  "slab",
+ ]
+@@ -897,8 +946,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+ dependencies = [
+  "cfg-if",
++ "js-sys",
+  "libc",
+  "wasi",
++ "wasm-bindgen",
+ ]
+ 
+ [[package]]
+@@ -920,10 +971,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
+ dependencies = [
+  "cfg-if",
++ "js-sys",
+  "libc",
+  "r-efi 6.0.0",
++ "rand_core 0.10.1",
+  "wasip2",
+  "wasip3",
++ "wasm-bindgen",
+ ]
+ 
+ [[package]]
+@@ -943,7 +997,7 @@ dependencies = [
+  "futures-core",
+  "futures-sink",
+  "futures-util",
+- "http",
++ "http 0.2.12",
+  "indexmap",
+  "slab",
+  "tokio",
+@@ -984,15 +1038,19 @@ dependencies = [
+  "futures-core",
+  "futures-util",
+  "harmonia-nar",
++ "harmonia-protocol",
+  "harmonia-store-core",
+  "harmonia-store-db",
++ "harmonia-store-remote",
+  "harmonia-utils-hash",
+  "harmonia-utils-test",
+  "http-range",
++ "lru",
+  "mime",
+  "nix",
+  "percent-encoding",
+  "prometheus",
++ "reqwest",
+  "rustls",
+  "rustls-pki-types",
+  "serde",
+@@ -1235,6 +1293,8 @@ version = "0.15.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+ dependencies = [
++ "allocator-api2",
++ "equivalent",
+  "foldhash 0.1.5",
+ ]
+ 
+@@ -1285,6 +1345,39 @@ dependencies = [
+  "itoa",
+ ]
+ 
++[[package]]
++name = "http"
++version = "1.4.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
++dependencies = [
++ "bytes",
++ "itoa",
++]
++
++[[package]]
++name = "http-body"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
++dependencies = [
++ "bytes",
++ "http 1.4.2",
++]
++
++[[package]]
++name = "http-body-util"
++version = "0.1.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
++dependencies = [
++ "bytes",
++ "futures-core",
++ "http 1.4.2",
++ "http-body",
++ "pin-project-lite",
++]
++
+ [[package]]
+ name = "http-range"
+ version = "0.1.5"
+@@ -1312,6 +1405,65 @@ dependencies = [
+  "typenum",
+ ]
+ 
++[[package]]
++name = "hyper"
++version = "1.10.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "55281c53a1894c864990125767da440a4e630446785086f52523b20033b74498"
++dependencies = [
++ "atomic-waker",
++ "bytes",
++ "futures-channel",
++ "futures-core",
++ "http 1.4.2",
++ "http-body",
++ "httparse",
++ "itoa",
++ "pin-project-lite",
++ "smallvec",
++ "tokio",
++ "want",
++]
++
++[[package]]
++name = "hyper-rustls"
++version = "0.27.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
++dependencies = [
++ "http 1.4.2",
++ "hyper",
++ "hyper-util",
++ "rustls",
++ "tokio",
++ "tokio-rustls",
++ "tower-service",
++ "webpki-roots",
++]
++
++[[package]]
++name = "hyper-util"
++version = "0.1.20"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
++dependencies = [
++ "base64",
++ "bytes",
++ "futures-channel",
++ "futures-util",
++ "http 1.4.2",
++ "http-body",
++ "hyper",
++ "ipnet",
++ "libc",
++ "percent-encoding",
++ "pin-project-lite",
++ "socket2 0.6.3",
++ "tokio",
++ "tower-service",
++ "tracing",
++]
++
+ [[package]]
+ name = "icu_collections"
+ version = "2.2.0"
+@@ -1439,6 +1591,12 @@ dependencies = [
+  "serde_core",
+ ]
+ 
++[[package]]
++name = "ipnet"
++version = "2.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
++
+ [[package]]
+ name = "itertools"
+ version = "0.13.0"
+@@ -1470,6 +1628,8 @@ version = "0.3.95"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
+ dependencies = [
++ "cfg-if",
++ "futures-util",
+  "once_cell",
+  "wasm-bindgen",
+ ]
+@@ -1504,6 +1664,26 @@ version = "0.2.186"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+ 
++[[package]]
++name = "liblzma"
++version = "0.4.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "45aec2360b3933207e27908049d8e4df4e476b58180afb1e56b2a4fb72efe4ba"
++dependencies = [
++ "liblzma-sys",
++]
++
++[[package]]
++name = "liblzma-sys"
++version = "0.4.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a046c7f353ba30f810545151e04f63545833803f5b86ee3ddf1517247fe560a5"
++dependencies = [
++ "cc",
++ "libc",
++ "pkg-config",
++]
++
+ [[package]]
+ name = "libsqlite3-sys"
+ version = "0.37.0"
+@@ -1548,6 +1728,21 @@ version = "0.4.29"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+ 
++[[package]]
++name = "lru"
++version = "0.12.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
++dependencies = [
++ "hashbrown 0.15.5",
++]
++
++[[package]]
++name = "lru-slab"
++version = "0.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
++
+ [[package]]
+ name = "matchers"
+ version = "0.2.0"
+@@ -1842,7 +2037,7 @@ dependencies = [
+  "bit-vec",
+  "bitflags",
+  "num-traits",
+- "rand",
++ "rand 0.9.4",
+  "rand_chacha",
+  "rand_xorshift",
+  "regex-syntax",
+@@ -1868,6 +2063,62 @@ version = "1.2.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+ 
++[[package]]
++name = "quinn"
++version = "0.11.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
++dependencies = [
++ "bytes",
++ "cfg_aliases",
++ "pin-project-lite",
++ "quinn-proto",
++ "quinn-udp",
++ "rustc-hash",
++ "rustls",
++ "socket2 0.6.3",
++ "thiserror",
++ "tokio",
++ "tracing",
++ "web-time",
++]
++
++[[package]]
++name = "quinn-proto"
++version = "0.11.16"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
++dependencies = [
++ "bytes",
++ "getrandom 0.4.2",
++ "lru-slab",
++ "rand 0.10.2",
++ "rand_pcg",
++ "ring",
++ "rustc-hash",
++ "rustls",
++ "rustls-pki-types",
++ "slab",
++ "thiserror",
++ "tinyvec",
++ "tracing",
++ "web-time",
++]
++
++[[package]]
++name = "quinn-udp"
++version = "0.5.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
++dependencies = [
++ "cfg_aliases",
++ "libc",
++ "once_cell",
++ "socket2 0.6.3",
++ "tracing",
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "quote"
+ version = "1.0.45"
+@@ -1899,6 +2150,17 @@ dependencies = [
+  "rand_core 0.9.5",
+ ]
+ 
++[[package]]
++name = "rand"
++version = "0.10.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
++dependencies = [
++ "chacha20",
++ "getrandom 0.4.2",
++ "rand_core 0.10.1",
++]
++
+ [[package]]
+ name = "rand_chacha"
+ version = "0.9.0"
+@@ -1927,6 +2189,21 @@ dependencies = [
+  "getrandom 0.3.4",
+ ]
+ 
++[[package]]
++name = "rand_core"
++version = "0.10.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
++
++[[package]]
++name = "rand_pcg"
++version = "0.10.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
++dependencies = [
++ "rand_core 0.10.1",
++]
++
+ [[package]]
+ name = "rand_xorshift"
+ version = "0.4.0"
+@@ -2006,6 +2283,47 @@ version = "1.9.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+ 
++[[package]]
++name = "reqwest"
++version = "0.12.28"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
++dependencies = [
++ "base64",
++ "bytes",
++ "futures-core",
++ "futures-util",
++ "http 1.4.2",
++ "http-body",
++ "http-body-util",
++ "hyper",
++ "hyper-rustls",
++ "hyper-util",
++ "js-sys",
++ "log",
++ "percent-encoding",
++ "pin-project-lite",
++ "quinn",
++ "rustls",
++ "rustls-pki-types",
++ "serde",
++ "serde_json",
++ "serde_urlencoded",
++ "sync_wrapper",
++ "tokio",
++ "tokio-rustls",
++ "tokio-util",
++ "tower",
++ "tower-http",
++ "tower-service",
++ "url",
++ "wasm-bindgen",
++ "wasm-bindgen-futures",
++ "wasm-streams",
++ "web-sys",
++ "webpki-roots",
++]
++
+ [[package]]
+ name = "ring"
+ version = "0.17.14"
+@@ -2074,6 +2392,12 @@ dependencies = [
+  "sqlite-wasm-rs",
+ ]
+ 
++[[package]]
++name = "rustc-hash"
++version = "2.1.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
++
+ [[package]]
+ name = "rustc_version"
+ version = "0.4.1"
+@@ -2117,6 +2441,7 @@ version = "1.14.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "be040f8b0a225e40375822a563fa9524378b9d63112f53e19ffff34df5d33fdd"
+ dependencies = [
++ "web-time",
+  "zeroize",
+ ]
+ 
+@@ -2384,6 +2709,15 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "sync_wrapper"
++version = "1.0.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
++dependencies = [
++ "futures-core",
++]
++
+ [[package]]
+ name = "synstructure"
+ version = "0.13.2"
+@@ -2488,6 +2822,21 @@ dependencies = [
+  "serde_json",
+ ]
+ 
++[[package]]
++name = "tinyvec"
++version = "1.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
++dependencies = [
++ "tinyvec_macros",
++]
++
++[[package]]
++name = "tinyvec_macros"
++version = "0.1.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
++
+ [[package]]
+ name = "tokio"
+ version = "1.52.1"
+@@ -2612,6 +2961,51 @@ version = "1.1.1+spec-1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
+ 
++[[package]]
++name = "tower"
++version = "0.5.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
++dependencies = [
++ "futures-core",
++ "futures-util",
++ "pin-project-lite",
++ "sync_wrapper",
++ "tokio",
++ "tower-layer",
++ "tower-service",
++]
++
++[[package]]
++name = "tower-http"
++version = "0.6.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
++dependencies = [
++ "bitflags",
++ "bytes",
++ "futures-util",
++ "http 1.4.2",
++ "http-body",
++ "pin-project-lite",
++ "tower",
++ "tower-layer",
++ "tower-service",
++ "url",
++]
++
++[[package]]
++name = "tower-layer"
++version = "0.3.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
++
++[[package]]
++name = "tower-service"
++version = "0.3.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
++
+ [[package]]
+ name = "tracing"
+ version = "0.1.44"
+@@ -2674,6 +3068,12 @@ dependencies = [
+  "tracing-log",
+ ]
+ 
++[[package]]
++name = "try-lock"
++version = "0.2.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
++
+ [[package]]
+ name = "typenum"
+ version = "1.20.0"
+@@ -2777,6 +3177,15 @@ dependencies = [
+  "winapi-util",
+ ]
+ 
++[[package]]
++name = "want"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
++dependencies = [
++ "try-lock",
++]
++
+ [[package]]
+ name = "wasi"
+ version = "0.11.1+wasi-snapshot-preview1"
+@@ -2814,6 +3223,16 @@ dependencies = [
+  "wasm-bindgen-shared",
+ ]
+ 
++[[package]]
++name = "wasm-bindgen-futures"
++version = "0.4.68"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f371d383f2fb139252e0bfac3b81b265689bf45b6874af544ffa4c975ac1ebf8"
++dependencies = [
++ "js-sys",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "wasm-bindgen-macro"
+ version = "0.2.118"
+@@ -2868,6 +3287,19 @@ dependencies = [
+  "wasmparser",
+ ]
+ 
++[[package]]
++name = "wasm-streams"
++version = "0.4.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
++dependencies = [
++ "futures-util",
++ "js-sys",
++ "wasm-bindgen",
++ "wasm-bindgen-futures",
++ "web-sys",
++]
++
+ [[package]]
+ name = "wasmparser"
+ version = "0.244.0"
+@@ -2890,6 +3322,25 @@ dependencies = [
+  "wasm-bindgen",
+ ]
+ 
++[[package]]
++name = "web-time"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
++dependencies = [
++ "js-sys",
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "webpki-roots"
++version = "1.0.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
++dependencies = [
++ "rustls-pki-types",
++]
++
+ [[package]]
+ name = "winapi"
+ version = "0.3.9"
+diff --git a/harmonia-cache/Cargo.toml b/harmonia-cache/Cargo.toml
+index 8483852..0032fc0 100644
+--- a/harmonia-cache/Cargo.toml
++++ b/harmonia-cache/Cargo.toml
+@@ -16,10 +16,12 @@ path = "src/main.rs"
+ actix-files = "0.6.10"
+ actix-web = { version = "4", default-features = false, features = [ "macros", "rustls-0_23" ] }
+ askama_escape = "0.15.6"
+-async-compression = { version = "0.4.42", features = [ "tokio", "bzip2" ] }
++async-compression = { version = "0.4.42", features = [ "tokio", "bzip2", "xz", "zstd" ] }
+ http-range = "0.1"
++lru = "0.12"
+ mime = "0.3"
+ percent-encoding = "2.3.2"
++reqwest = { version = "0.12", default-features = false, features = [ "rustls-tls", "stream" ] }
+ rustls = { version = "0.23", default-features = false, features = [
+     "ring",
+     "std",
+@@ -43,8 +45,10 @@ bytes               = { workspace = true }
+ futures-core        = { workspace = true }
+ futures-util        = { workspace = true }
+ harmonia-nar        = { version = "3.0.0" }
++harmonia-protocol   = { version = "3.0.0" }
+ harmonia-store-core = { version = "0.0.0-alpha.0" }
+ harmonia-store-db   = { version = "3.0.0" }
++harmonia-store-remote = { version = "3.0.0" }
+ harmonia-utils-hash = { version = "0.0.0-alpha.0" }
+ nix                 = { workspace = true, features = [ "socket", "fs" ] }
+ prometheus          = { workspace = true }
+diff --git a/harmonia-cache/src/config.rs b/harmonia-cache/src/config.rs
+index 255040e..fc2191a 100644
+--- a/harmonia-cache/src/config.rs
++++ b/harmonia-cache/src/config.rs
+@@ -31,6 +31,22 @@ fn default_enable_compression() -> bool {
+     false
+ }
+ 
++fn default_miss_daemon_socket() -> PathBuf {
++    PathBuf::from("/nix/var/nix/daemon-socket/socket")
++}
++
++fn default_miss_upstream_url() -> String {
++    "https://cache.nixos.org".into()
++}
++
++fn default_miss_narinfo_cache_size() -> usize {
++    1024
++}
++
++fn default_miss_narinfo_cache_ttl() -> u64 {
++    600
++}
++
+ /// zstd parameters applied to on-the-fly NAR encoding when the client sends
+ /// `Accept-Encoding: zstd`. Defaults are tuned for a substitution cache:
+ /// level 1 with long-distance matching beats the libzstd default (level 3)
+@@ -117,6 +133,30 @@ pub(crate) struct Config {
+     #[serde(default = "default_enable_compression")]
+     pub(crate) enable_compression: bool,
+ 
++    /// On a narinfo/nar miss, 301-redirect the client to `miss_upstream_url`
++    /// (so it never blocks on us) and, in the background, substitute the path
++    /// into the local store via the nix daemon so the next request is served
++    /// locally. Off by default (stock behaviour: 404 on miss).
++    #[serde(default)]
++    pub(crate) substitute_on_miss: bool,
++    /// Upstream binary cache used for both the miss redirect target and the
++    /// background warm's narinfo fetch (over HTTPS). Required when
++    /// `substitute_on_miss` is set.
++    #[serde(default = "default_miss_upstream_url")]
++    pub(crate) miss_upstream_url: String,
++    /// The real nix-daemon socket (harmonia-daemon does not substitute).
++    #[serde(default = "default_miss_daemon_socket")]
++    pub(crate) miss_daemon_socket: PathBuf,
++    /// Max entries in the in-memory narinfo LRU (upstream narinfos of
++    /// in-flight, not-yet-materialized paths). Low on purpose — entries are
++    /// deleted when their NAR job completes.
++    #[serde(default = "default_miss_narinfo_cache_size")]
++    pub(crate) miss_narinfo_cache_size: usize,
++    /// TTL (seconds) for narinfo LRU entries; backstop for narinfos whose NAR
++    /// is never requested.
++    #[serde(default = "default_miss_narinfo_cache_ttl")]
++    pub(crate) miss_narinfo_cache_ttl: u64,
++
+     #[serde(default)]
+     pub(crate) zstd: ZstdConfig,
+ 
+@@ -250,3 +290,31 @@ pub(crate) fn load() -> Result<Config> {
+     );
+     Ok(settings)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_substitute_on_miss_defaults() {
++        let c: Config = toml::from_str("").unwrap();
++        assert!(!c.substitute_on_miss);
++        assert_eq!(c.miss_upstream_url, "https://cache.nixos.org");
++        assert_eq!(
++            c.miss_daemon_socket,
++            PathBuf::from("/nix/var/nix/daemon-socket/socket")
++        );
++        assert_eq!(c.miss_narinfo_cache_size, 1024);
++        assert_eq!(c.miss_narinfo_cache_ttl, 600);
++    }
++
++    #[test]
++    fn test_substitute_on_miss_parses() {
++        let c: Config = toml::from_str(
++            "substitute_on_miss = true\nmiss_upstream_url = \"https://example.invalid\"\n",
++        )
++        .unwrap();
++        assert!(c.substitute_on_miss);
++        assert_eq!(c.miss_upstream_url, "https://example.invalid");
++    }
++}
+diff --git a/harmonia-cache/src/main.rs b/harmonia-cache/src/main.rs
+index 22ee8e8..2ad9d61 100644
+--- a/harmonia-cache/src/main.rs
++++ b/harmonia-cache/src/main.rs
+@@ -34,6 +34,9 @@ mod health;
+ mod nar;
+ mod narinfo;
+ mod narlist;
++mod upstream_narinfo;
++mod narinfo_cache;
++mod nar_job;
+ mod prometheus;
+ mod realisations;
+ mod root;
+@@ -42,6 +45,7 @@ mod store;
+ mod systemd;
+ mod template;
+ mod tls;
++mod upstream;
+ mod version;
+ mod zstd_body;
+ 
+@@ -169,9 +173,22 @@ async fn inner_main() -> Result<()> {
+     let metrics = prometheus::initialize_metrics()?;
+     let config = config::load()?;
+ 
++    // Shared substitute-on-miss state: a TTL'd LRU of upstream narinfos and the
++    // coalescing registry of in-flight streaming NAR jobs. Both are process-wide
++    // (shared across actix workers) so a single upstream fetch serves every
++    // concurrent client of the same path.
++    let narinfo_cache = std::sync::Arc::new(narinfo_cache::NarInfoCache::new(
++        config.miss_narinfo_cache_size,
++        Duration::from_secs(config.miss_narinfo_cache_ttl),
++    ));
++    let job_registry =
++        std::sync::Arc::new(nar_job::JobRegistry::new(narinfo_cache.clone()));
++
+     let c = web::Data::new(config);
+     let config_data = c.clone();
+     let metrics_data = web::Data::new(metrics.clone());
++    let narinfo_cache_data = web::Data::new(narinfo_cache);
++    let job_registry_data = web::Data::new(job_registry);
+ 
+     let nar_route = format!("/nar/{{narhash:[{NIXBASE32_ALPHABET}]{{52}}}}.nar");
+     // narinfos served by nix-serve have the narhash embedded in the nar URL.
+@@ -190,6 +207,8 @@ async fn inner_main() -> Result<()> {
+             .wrap(prometheus::PrometheusMiddleware::new(metrics.clone()))
+             .app_data(config_data.clone())
+             .app_data(metrics_data.clone())
++            .app_data(narinfo_cache_data.clone())
++            .app_data(job_registry_data.clone())
+             .route("/", web::get().to(root::get))
+             .route("/{hash}.ls", web::get().to(narlist::get))
+             .route("/{hash}.ls", web::head().to(narlist::get))
+diff --git a/harmonia-cache/src/nar.rs b/harmonia-cache/src/nar.rs
+index 87c1b4a..4a35899 100644
+--- a/harmonia-cache/src/nar.rs
++++ b/harmonia-cache/src/nar.rs
+@@ -5,6 +5,7 @@ use actix_web::web::Bytes;
+ use actix_web::{HttpRequest, HttpResponse, http, web};
+ use harmonia_nar::NarByteStream;
+ use harmonia_store_core::store_path::StorePathHash;
++use harmonia_store_db::ValidPathInfo;
+ use harmonia_utils_hash::Hash;
+ use harmonia_utils_hash::fmt::{Any, CommonHash};
+ use serde::Deserialize;
+@@ -53,11 +54,41 @@ impl HttpRange {
+     }
+ }
+ 
++/// Serve a full (non-range) NAR from the local store for a known `ValidPathInfo`.
++/// Used by both the normal hit path (after post-park re-query) and the direct hit.
++fn serve_full_nar_from_store(
++    settings: &Config,
++    info: &ValidPathInfo,
++    outhash: &str,
++) -> crate::error::Result<HttpResponse> {
++    let store_path = settings.store.store_dir().parse(&info.path).map_err(|e| {
++        CacheError::from(StoreError::PathQuery {
++            hash: outhash.to_string(),
++            reason: format!("invalid store path in db: {e}"),
++        })
++    })?;
++    let nar_size = info.nar_size.ok_or_else(|| {
++        CacheError::from(StoreError::PathQuery {
++            hash: outhash.to_string(),
++            reason: format!("missing narSize for {}", info.path),
++        })
++    })?;
++    let real_path = settings.store.get_real_path(&store_path);
++    let stream = NarByteStream::new(real_path);
++    Ok(HttpResponse::Ok()
++        .insert_header((http::header::CONTENT_TYPE, "application/x-nix-archive"))
++        .insert_header((http::header::ACCEPT_RANGES, "bytes"))
++        .insert_header(cache_control_max_age_1y())
++        .body(actix_web::body::SizedStream::new(nar_size, stream)))
++}
++
+ pub(crate) async fn get(
+     path: web::Path<PathParams>,
+     req: HttpRequest,
+     q: web::Query<NarRequest>,
+     settings: web::Data<Config>,
++    registry: web::Data<std::sync::Arc<crate::nar_job::JobRegistry>>,
++    metrics: web::Data<std::sync::Arc<crate::prometheus::PrometheusMetrics>>,
+ ) -> crate::ServerResult {
+     // Extract the narhash from the query parameter, and bail out if it's missing or invalid.
+     let narhash = some_or_404!(Some(path.narhash.as_str()));
+@@ -94,6 +125,51 @@ pub(crate) async fn get(
+     {
+         Some(info) => info,
+         None => {
++            // substitute-on-miss: only attach to the job registry when the
++            // nix-serve route form is used (outhash was present in the path or
++            // query string). The plain `/nar/<narhash>.nar` route without an
++            // outhash stays 404 on miss (outhash is already validated above).
++            if settings.substitute_on_miss {
++                use crate::nar_job::{Attach, JobState};
++                // Bounded retries: a mid-stream arrival whose job served the NAR
++                // but didn't cache it (a dependency wasn't valid yet) re-fetches
++                // fresh rather than 404ing, so concurrent requestors of the same
++                // path still get their bytes.
++                for _ in 0..3u32 {
++                    match registry
++                        .attach(settings.clone(), metrics.clone(), &store_path_hash.to_string())
++                        .await
++                    {
++                        Attach::Live(body) => {
++                            return Ok(HttpResponse::Ok()
++                                .insert_header((
++                                    http::header::CONTENT_TYPE,
++                                    "application/x-nix-archive",
++                                ))
++                                .insert_header(crate::cache_control_no_store())
++                                .body(actix_web::body::SizedStream::new(body.nar_size(), body)));
++                        }
++                        Attach::Parked(mut done) => {
++                            // Mid-stream arrival: wait for the job to finish, then
++                            // serve from the store if it cached; otherwise loop to
++                            // re-fetch fresh.
++                            let _ = done
++                                .wait_for(|s| !matches!(s, JobState::Running))
++                                .await;
++                            if let Some(info) = settings
++                                .store
++                                .query_path_info_by_hash_part(&store_path_hash.to_string())?
++                            {
++                                return Ok(serve_full_nar_from_store(&settings, &info, outhash)?);
++                            }
++                            // Not cached this round; retry.
++                        }
++                    }
++                }
++                return Ok(HttpResponse::NotFound()
++                    .insert_header(crate::cache_control_no_store())
++                    .body("store path not found"));
++            }
+             return Ok(HttpResponse::NotFound()
+                 .insert_header(crate::cache_control_no_store())
+                 .body("store path not found"));
+diff --git a/harmonia-cache/src/nar_job.rs b/harmonia-cache/src/nar_job.rs
+new file mode 100644
+index 0000000..c43471b
+--- /dev/null
++++ b/harmonia-cache/src/nar_job.rs
+@@ -0,0 +1,1640 @@
++//! Per-path streaming NAR job + coalescing registry for substitute-on-miss.
++//!
++//! A `Job` fetches exactly one upstream `<filehash>.nar.<compression>`, decodes
++//! it per the upstream narinfo's `Compression` (zstd/xz/bzip2/none), and
++//! fans the decoded NAR bytes to (a) live client streams via a `broadcast` and
++//! (b) the local nix store via `add_to_store_nar` on the miss daemon socket.
++//!
++//! Concurrency contract (the load-bearing invariants):
++//!   * The store import is the durable priority. It runs to completion even if
++//!     every client disconnects; convergence never depends on a client staying
++//!     attached.
++//!   * The store sink and the broadcast fan-out run *concurrently*: decoded
++//!     chunks are written into a `tokio::io::duplex` whose read half is drained
++//!     by `add_to_store_nar` on a spawned task. If we wrote to the duplex
++//!     without a concurrent drain, the 64 KiB buffer would fill and the fan-out
++//!     would deadlock.
++//!   * Coalescing: the registry keys `Weak<Job>` by store-path hash. A second
++//!     concurrent request for the same path upgrades the existing `Weak` and
++//!     subscribes to the same broadcast — it never starts a second fetch.
++//!   * Subscribe-before-first-chunk: the broadcast channel is created
++//!     synchronously in `Job::spawn` (which returns after the narinfo fetch but
++//!     before any chunk). The whole same-hash cohort — the creator and every
++//!     coalescer awaiting the shared creation — resolves that creation and
++//!     subscribes while the fan-out task is still doing its daemon connect and
++//!     the upstream `.nar.xz` GET (a network round trip), i.e. before the first
++//!     decoded chunk is broadcast. They therefore join the start-of-job cohort
++//!     and never miss the head.
++//!   * Single-fetch (single-flight): the registry never holds a lock across the
++//!     upstream fetch. Instead each hash has a *creation-in-progress* entry — a
++//!     `Shared` future the first arrival installs and every same-hash arrival
++//!     awaits — so a herd for one missing path coalesces onto one fetch/one job,
++//!     while requests for *distinct* hashes create their jobs concurrently
++//!     (their narinfo RTTs run in parallel; a single hung upstream fetch can no
++//!     longer stall creation for unrelated paths).
++
++use std::collections::HashMap;
++use std::future::Future;
++use std::pin::Pin;
++use std::sync::{Arc, Weak};
++use std::task::{Context, Poll};
++
++use actix_web::web;
++use bytes::{Bytes, BytesMut};
++use harmonia_protocol::types::DaemonStore as _;
++use futures_core::Stream;
++use futures_util::FutureExt as _;
++use futures_util::future::Shared;
++use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader};
++use tokio::sync::{broadcast, watch};
++
++use crate::config::Config;
++use crate::narinfo_cache::NarInfoCache;
++use crate::prometheus::PrometheusMetrics;
++use crate::upstream;
++use crate::upstream_narinfo::{UpstreamNarInfo, parse_upstream_narinfo};
++
++/// Broadcast channel capacity (chunks). A slow client that lags past this many
++/// buffered chunks gets `Lagged` and is dropped — it never gates the job.
++const BROADCAST_CAP: usize = 256;
++
++/// Read-buffer target for each decoded-chunk read. Chunks are split off a
++/// reusable `BytesMut` so both the store sink and every broadcast subscriber
++/// share a single ref-counted allocation.
++const CHUNK_TARGET: usize = 64 * 1024;
++
++/// Terminal state of a job, observed by parked (mid-stream) waiters.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum JobState {
++    /// The fan-out + store import are still in progress.
++    Running,
++    /// The store import completed and the path is now valid locally.
++    Ok,
++    /// The job failed (resolver, upstream, decode, or daemon import).
++    Failed,
++}
++
++/// A single in-flight streaming NAR job. Created (and kept alive) by the
++/// registry via an `Arc<Job>`; the fan-out task holds no strong reference back,
++/// so the job's registry slot drops once all clients + the registry release it.
++/// The fan-out task itself owns everything it needs and runs to completion
++/// regardless.
++pub(crate) struct Job {
++    /// Store-path hash (32-char base32); the registry key.
++    #[allow(dead_code)]
++    hash: String,
++    /// Live subscribers attach here. `send` never blocks and tolerates zero
++    /// receivers.
++    tx: broadcast::Sender<Bytes>,
++    /// Terminal-state signal for parked waiters (mid-stream arrivals).
++    done: watch::Receiver<JobState>,
++    /// Decompressed NAR size, from the upstream narinfo. Used with actix
++    /// `SizedStream` so live clients get a correct `Content-Length`.
++    nar_size: u64,
++}
++
++impl Job {
++    /// Spawn a new job: fetch/resolve the upstream narinfo (needed for
++    /// `nar_size` and the compressed `nar_url`), create the broadcast + done
++    /// channels, then spawn the fan-out task. Returns the `Arc<Job>`.
++    ///
++    /// Clients (the creator and any same-hash coalescers) subscribe *after* this
++    /// returns but *before the first chunk is broadcast*: `run_fanout` does a
++    /// daemon connect and the upstream `.nar.xz` GET (a network round trip)
++    /// before the first decoded chunk reaches the broadcast, so the whole
++    /// same-hash cohort has resolved the shared creation and subscribed within
++    /// that window — they join the start-of-job cohort and never miss the head.
++    ///
++    /// Returns `Err` only if the upstream narinfo cannot be resolved (so the
++    /// caller can 404); once a Job exists, its fan-out runs to completion.
++    async fn spawn(
++        cfg: web::Data<Config>,
++        metrics: web::Data<Arc<PrometheusMetrics>>,
++        registry: Arc<JobRegistry>,
++        hash: String,
++    ) -> Result<Arc<Job>, String> {
++        // Resolve the upstream narinfo first (cache-or-fetch). We need it up
++        // front for `nar_size` and to know the compressed `nar_url`.
++        let up = get_or_fetch_upstream(&cfg, &registry.cache, &hash).await?;
++        let nar_size = up.info.info.nar_size;
++
++        let (tx, _rx0) = broadcast::channel::<Bytes>(BROADCAST_CAP);
++        let (done_tx, done_rx) = watch::channel(JobState::Running);
++
++        let job = Arc::new(Job {
++            hash: hash.clone(),
++            tx: tx.clone(),
++            done: done_rx,
++            nar_size,
++        });
++
++        // The fan-out task owns the `Arc<Job>` for the whole run. This is what
++        // keeps the registry's `Weak` upgradeable (so concurrent requests
++        // coalesce) AND it is the last thing holding a broadcast `Sender`:
++        // clients therefore see a clean `Closed` EOF exactly when the job ends,
++        // independent of whether any client stays attached. The producing
++        // sender lives in `tx`; when the task returns it drops both `tx` and the
++        // `Arc<Job>` (which holds the other sender), closing the channel.
++        tokio::spawn(fanout(cfg, metrics, registry, hash, job.clone(), up, tx, done_tx));
++
++        Ok(job)
++    }
++}
++
++/// Resolve the upstream narinfo for `hash`: LRU hit, else fetch `<hash>.narinfo`
++/// from upstream, parse+rewrite it, and cache it.
++async fn get_or_fetch_upstream(
++    cfg: &Config,
++    cache: &NarInfoCache,
++    hash: &str,
++) -> Result<Arc<UpstreamNarInfo>, String> {
++    if let Some(up) = cache.get(hash) {
++        return Ok(up);
++    }
++    // A 404 here means the narinfo vanished upstream between the client's
++    // narinfo request (which populated the LRU) and this fetch — treat the
++    // clean miss as an error so the job fails rather than parsing an empty body.
++    let text = upstream::get_text(&cfg.miss_upstream_url, &format!("/{hash}.narinfo"))
++        .await?
++        .ok_or_else(|| "upstream narinfo 404 (vanished mid-flight)".to_string())?;
++    let up = parse_upstream_narinfo(cfg.store.store_dir(), &text)?;
++    // Use the hash extracted from the upstream narinfo (authoritative), keying on
++    // `store_path_hash` so a normalised base32 form is always used.
++    let key = up.store_path_hash.clone();
++    let up = Arc::new(up);
++    cache.insert(key, up.clone());
++    Ok(up)
++}
++
++/// The heart: fetch the compressed NAR, xz-decode it, and concurrently feed the
++/// store sink (gated, durable) and the broadcast (non-blocking, best-effort).
++#[allow(clippy::too_many_arguments)]
++async fn fanout(
++    cfg: web::Data<Config>,
++    metrics: web::Data<Arc<PrometheusMetrics>>,
++    registry: Arc<JobRegistry>,
++    hash: String,
++    job: Arc<Job>,
++    up: Arc<UpstreamNarInfo>,
++    tx: broadcast::Sender<Bytes>,
++    done_tx: watch::Sender<JobState>,
++) {
++    metrics.nar_jobs_started_total.inc();
++
++    let result = run_fanout(&cfg, &up, &tx).await;
++
++    // Publish the terminal state to parked waiters, then evict our registry +
++    // narinfo-cache slots so the next request re-resolves cleanly.
++    let state = match &result {
++        // Ok(_) = the client was served the full NAR. `true` also imported it;
++        // `false` = served-but-not-cached (a dependency wasn't present yet;
++        // logged in run_fanout). Either way the client succeeds, so never Failed.
++        Ok(cached) => {
++            if *cached {
++                metrics.nar_jobs_completed_total.inc();
++            }
++            JobState::Ok
++        }
++        Err(e) => {
++            tracing::warn!(
++                "nar job {} ({}) failed: {e}",
++                up.store_path,
++                up.nar_hash_bare,
++            );
++            metrics.nar_jobs_failed_total.inc();
++            JobState::Failed
++        }
++    };
++    let _ = done_tx.send(state);
++    registry.remove(&hash);
++    registry.cache.remove(&hash);
++
++    // Dropping our producing `tx` and the `Arc<Job>` (which holds the other
++    // sender) closes the broadcast: still-attached clients see a clean EOF
++    // (`Closed` -> stream `None`). Held to the very end so watchers observe the
++    // final `done` value and so the registry `Weak` stays upgradeable (coalesce)
++    // for the whole run.
++    drop(tx);
++    drop(job);
++    drop(done_tx);
++}
++
++/// Inner fan-out. `Ok(cached)` means the whole NAR was fetched, decoded, and
++/// broadcast to clients; `cached` says whether it was *also* imported into the
++/// local store (`false` when a dependency isn't valid here yet, so the path is
++/// served but not cached this round). `Err` means the NAR itself couldn't be
++/// produced (upstream/decode/corruption) and the client must not trust it.
++async fn run_fanout(
++    cfg: &Config,
++    up: &UpstreamNarInfo,
++    tx: &broadcast::Sender<Bytes>,
++) -> Result<bool, String> {
++    // Open the daemon that actually holds the store. Pin the client's store dir
++    // to our configured store so the ValidPathInfo's StorePath serializes with
++    // the right prefix (the daemon rejects paths outside its store dir).
++    let mut client = harmonia_store_remote::DaemonClientBuilder::new()
++        .set_store_dir(cfg.store.store_dir())
++        .connect_unix(&cfg.miss_daemon_socket)
++        .await
++        .map_err(|e| format!("daemon connect: {e}"))?;
++
++    // The store sink: decoded NAR bytes are written into `store_w`; the daemon
++    // drains `store_r`. These MUST run concurrently or the duplex buffer fills.
++    let (store_w, store_r) = tokio::io::duplex(CHUNK_TARGET);
++    let mut store_w = store_w;
++
++    let info = up.info.clone();
++    let import = async move {
++        client
++            .add_to_store_nar(&info, BufReader::new(store_r), false, false)
++            .await
++            .map_err(|e| format!("add_to_store_nar: {e}"))
++    };
++
++    // The producer: fetch + xz-decode, writing every byte to the store sink
++    // (the gate) and broadcasting each chunk (best-effort).
++    let produce = async move {
++        let nar_path = format!("/{}", up.nar_url);
++        let body = upstream::get_stream(&cfg.miss_upstream_url, &nar_path)
++            .await
++            .map_err(|e| format!("upstream nar GET: {e}"))?;
++        // Decode per the UPSTREAM narinfo's Compression. cache.nixos.org serves
++        // zstd today and xz historically; a hard-coded xz decoder fails
++        // "stream/file format not recognized" on a .nar.zst. Box the decoder so
++        // every method yields one `AsyncRead` the loop below can drive.
++        use async_compression::tokio::bufread;
++        let mut dec: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
++            match up.upstream_compression.as_str() {
++                "none" => Box::new(body),
++                "xz" => Box::new(bufread::XzDecoder::new(body)),
++                "zstd" => Box::new(bufread::ZstdDecoder::new(body)),
++                "bzip2" => Box::new(bufread::BzDecoder::new(body)),
++                other => {
++                    return Err(format!("unsupported upstream compression: {other:?}"));
++                }
++            };
++
++        let mut buf = BytesMut::with_capacity(CHUNK_TARGET);
++        let mut store_open = true;
++        loop {
++            buf.reserve(CHUNK_TARGET);
++            let n = dec
++                .read_buf(&mut buf)
++                .await
++                .map_err(|e| format!("nar decode: {e}"))?;
++            if n == 0 {
++                break;
++            }
++            let chunk = buf.split().freeze();
++            // Feed the store sink best-effort. If the daemon hangs up (e.g. it
++            // rejected the path because a reference isn't valid here yet), stop
++            // feeding the store but KEEP broadcasting, so clients still receive
++            // the full NAR. They verify its hash against the signed narinfo, so
++            // an un-imported NAR is safe to serve; it just isn't cached this
++            // round (it caches on a later request, once its deps have landed).
++            if store_open && store_w.write_all(&chunk).await.is_err() {
++                store_open = false;
++            }
++            // Best-effort broadcast; zero receivers is fine.
++            let _ = tx.send(chunk);
++        }
++        if store_open {
++            let _ = store_w.shutdown().await;
++        }
++        Ok::<(), String>(())
++    };
++
++    // Drive both concurrently. The import future is the durable half; the
++    // producer feeds it. A producer error (e.g. truncated upstream) surfaces as
++    // an incomplete NAR, which the daemon rejects — so `import` also errors and
++    // the path is not made valid.
++    let (produce_res, import_res) = tokio::join!(produce, import);
++    // A produce failure means we couldn't fetch/decode the NAR at all — the
++    // client can't be served, so surface it.
++    produce_res?;
++    let cached = classify_import(import_res)?;
++    if !cached {
++        tracing::warn!(
++            "nar {} served but not cached (a dependency isn't in the store yet); \
++             it caches on a later request once its deps land",
++            up.store_path,
++        );
++    }
++    Ok(cached)
++}
++
++/// Classify a store-import result into a client-facing outcome. `Ok(true)` =
++/// imported and cached; `Ok(false)` = the daemon refused the path because a
++/// reference isn't valid here yet ("path '...' is not valid") — the NAR itself
++/// is fine (the client verifies its hash against the signed narinfo), so serve
++/// it and cache on a later request once its deps land; `Err` = a genuine
++/// failure (nar-hash mismatch, daemon gone) the client must not trust.
++fn classify_import(import_res: Result<(), String>) -> Result<bool, String> {
++    match import_res {
++        Ok(()) => Ok(true),
++        Err(e) if e.contains("is not valid") => Ok(false),
++        Err(e) => Err(e),
++    }
++}
++
++/// How a client attaches to a path's job.
++pub(crate) enum Attach {
++    /// A live broadcast stream: the client joined the start-of-job cohort and
++    /// receives the whole NAR from the head.
++    Live(BroadcastBody),
++    /// A mid-stream arrival: await the job's terminal state, then serve from the
++    /// store (on `Ok`) or 404 (on `Failed`).
++    Parked(watch::Receiver<JobState>),
++}
++
++/// The boxed creation future's output: the created job, or an `Arc`-wrapped
++/// error message (`Arc` so `Shared`'s `Clone`-output requirement is met and
++/// every same-hash waiter can observe the same failure).
++type CreationOutput = Result<Arc<Job>, Arc<String>>;
++
++/// The boxed, type-erased creation future before it is made shareable.
++type BoxCreationFut = Pin<Box<dyn Future<Output = CreationOutput> + Send>>;
++
++/// A shared, cloneable future resolving to the created job. The future performs
++/// the upstream narinfo fetch + `Job::spawn` **off the registry lock**; every
++/// same-hash arrival awaits this one `Shared` (single-flight).
++type CreationFut = Shared<BoxCreationFut>;
++
++/// A registry slot, keyed by store-path hash.
++enum CreationState {
++    /// A creation is in flight: the first arrival installed this future and
++    /// every same-hash arrival awaits *this same* `Shared` (single-flight), so
++    /// they coalesce onto one narinfo fetch and one `Job`.
++    InProgress(CreationFut),
++    /// A completed-but-still-live job. Kept as a `Weak` so the job's slot drops
++    /// once all clients + the fan-out task release it.
++    Live(Weak<Job>),
++}
++
++/// Coalescing registry of in-flight NAR jobs, keyed by store-path hash.
++///
++/// The map is guarded by a plain (non-async) mutex held only for brief
++/// insert/lookup — **never across the upstream fetch**. Single-fetch is instead
++/// guaranteed by a per-hash single-flight future ([`CreationState::InProgress`]):
++/// a herd for one missing path all awaits one `Shared` creation, while distinct
++/// hashes create concurrently. Creation (one narinfo RTT + a task spawn) runs
++/// off the lock; the actual NAR streaming happens in the fan-out task.
++pub(crate) struct JobRegistry {
++    jobs: std::sync::Mutex<HashMap<String, CreationState>>,
++    cache: Arc<NarInfoCache>,
++}
++
++impl JobRegistry {
++    pub(crate) fn new(cache: Arc<NarInfoCache>) -> Self {
++        Self {
++            jobs: std::sync::Mutex::new(HashMap::new()),
++            cache,
++        }
++    }
++
++    /// Evict a job's slot once its fan-out ends. Only removes a `Live` slot: a
++    /// slot may already have been replaced by a *new* in-progress creation
++    /// (after this job finished and its narinfo-cache entry was dropped), and we
++    /// must not clobber that.
++    fn remove(&self, hash: &str) {
++        let mut jobs = self.jobs.lock().unwrap();
++        if matches!(jobs.get(hash), Some(CreationState::Live(_))) {
++            jobs.remove(hash);
++        }
++    }
++
++    /// Join or create the job for `store_path_hash`.
++    ///
++    /// Fast path (caller's responsibility): the caller checks the local store
++    /// first and only calls `attach` on a genuine miss.
++    ///
++    /// * An existing job still `Running` → `Live` (subscribe to its broadcast).
++    /// * An existing job finishing/finished → `Parked` (await, then store-serve).
++    /// * A creation already in flight for this hash → await it (coalesce), then
++    ///   subscribe — no second fetch.
++    /// * No job and no creation → install a single-flight creation future, drop
++    ///   the lock, drive it (fetch + `Job::spawn`) off the lock, then subscribe.
++    ///   If the upstream narinfo can't be resolved, we surface a miss by
++    ///   returning `Parked` on a channel already set to `Failed`.
++    pub(crate) async fn attach(
++        self: &Arc<Self>,
++        cfg: web::Data<Config>,
++        metrics: web::Data<Arc<PrometheusMetrics>>,
++        store_path_hash: &str,
++    ) -> Attach {
++        // Decide, under the brief map lock, whether we join an existing job,
++        // await an in-flight creation, or become the creator. The lock is never
++        // held across an await.
++        enum Plan {
++            /// Subscribe to this already-live, still-running job.
++            Live(Arc<Job>),
++            /// This job is finishing/finished; park on its terminal state.
++            Parked(watch::Receiver<JobState>),
++            /// Await this in-flight creation (coalesced onto an existing fetch),
++            /// then subscribe to the resulting job.
++            Await(CreationFut),
++            /// We are the creator: drive this future, publish the result.
++            Create(CreationFut),
++        }
++
++        let plan = {
++            let mut jobs = self.jobs.lock().unwrap();
++            match jobs.get(store_path_hash) {
++                Some(CreationState::Live(weak)) => match weak.upgrade() {
++                    Some(job) if *job.done.borrow() == JobState::Running => Plan::Live(job),
++                    Some(job) => Plan::Parked(job.done.clone()),
++                    // Dead `Weak` (fan-out ended, slot not yet reaped, or a lost
++                    // remove race): treat as no job and create fresh.
++                    None => {
++                        let fut = self.make_creation_fut(&cfg, &metrics, store_path_hash);
++                        jobs.insert(store_path_hash.to_string(), CreationState::InProgress(fut.clone()));
++                        Plan::Create(fut)
++                    }
++                },
++                Some(CreationState::InProgress(fut)) => Plan::Await(fut.clone()),
++                None => {
++                    let fut = self.make_creation_fut(&cfg, &metrics, store_path_hash);
++                    jobs.insert(store_path_hash.to_string(), CreationState::InProgress(fut.clone()));
++                    Plan::Create(fut)
++                }
++            }
++        };
++
++        match plan {
++            Plan::Live(job) => {
++                let rx = job.tx.subscribe();
++                metrics.nar_clients_attached_total.inc();
++                Attach::Live(BroadcastBody::new(
++                    rx,
++                    job.nar_size,
++                    job.done.clone(),
++                    Arc::clone(&*metrics),
++                ))
++            }
++            Plan::Parked(done) => Attach::Parked(done),
++            // Creator and coalesced waiter are now symmetric: both only *await*
++            // and *observe* the shared creation. The slot finalization (swap to
++            // `Live` on success / remove on failure) lives INSIDE the creation
++            // future itself (see `make_creation_fut`), so it runs whenever the
++            // creation resolves — driven by whichever task polls the `Shared` to
++            // completion — and never depends on the first caller's request future
++            // surviving. If the creator's request future is dropped mid-creation,
++            // a coalesced waiter still drives the `Shared`, and the finalizer
++            // still runs.
++            Plan::Await(fut) | Plan::Create(fut) => match fut.await {
++                Ok(job) => self.subscribe_after_await(&metrics, job),
++                Err(_) => {
++                    // The creation logged the failure and already removed the
++                    // slot via its finalizer; treat as a miss.
++                    let (_tx, rx) = watch::channel(JobState::Failed);
++                    Attach::Parked(rx)
++                }
++            },
++        }
++    }
++
++    /// Build the single-flight creation future for `hash`: fetch the upstream
++    /// narinfo and `Job::spawn` (which spawns the fan-out task), then FINALIZE
++    /// this hash's registry slot from within the future itself. Runs entirely
++    /// off the registry lock.
++    ///
++    /// Finalization is owned by the creation future, not by any caller's request
++    /// future: on the creation resolving, the slot is swapped `InProgress ->
++    /// Live(Weak<Job>)` (success) or removed (failure) exactly once. Because the
++    /// underlying `BoxCreationFut` runs a single time — driven by whichever task
++    /// polls the `Shared` to completion — this holds even when the original
++    /// creator's request future is dropped mid-creation: a coalesced waiter
++    /// keeps driving the `Shared`, so the finalizer still runs. This closes the
++    /// creator-cancellation wedge where the slot was left `InProgress(completed)`
++    /// forever.
++    fn make_creation_fut(
++        self: &Arc<Self>,
++        cfg: &web::Data<Config>,
++        metrics: &web::Data<Arc<PrometheusMetrics>>,
++        hash: &str,
++    ) -> CreationFut {
++        let registry = self.clone();
++        let cfg = cfg.clone();
++        let metrics = metrics.clone();
++        let hash = hash.to_string();
++        let fut: BoxCreationFut = Box::pin(async move {
++            let result = Job::spawn(cfg, metrics, registry.clone(), hash.clone())
++                .await
++                .map_err(Arc::new);
++            // Finalize this hash's slot from within the creation future so it is
++            // independent of which task drove (or dropped) the creation. Under
++            // the brief map lock (never held across an await), and only if the
++            // slot is still our in-progress creation — a later fan-out finish may
++            // already have reaped/replaced it, and a subsequent creation may have
++            // taken the slot; we must not clobber either.
++            {
++                let mut jobs = registry.jobs.lock().unwrap();
++                if matches!(jobs.get(&hash), Some(CreationState::InProgress(_))) {
++                    match &result {
++                        Ok(job) => {
++                            jobs.insert(hash.clone(), CreationState::Live(Arc::downgrade(job)));
++                        }
++                        Err(e) => {
++                            tracing::warn!("nar job resolve for {hash} failed: {e}");
++                            jobs.remove(&hash);
++                        }
++                    }
++                }
++            }
++            result
++        });
++        fut.shared()
++    }
++
++    /// Subscribe an attaching client to `job` after awaiting its (possibly
++    /// shared) creation. A still-`Running` job yields a `Live` body from a fresh
++    /// broadcast subscription (a late arrival may miss the head but the store
++    /// import is durable); a finished/failed job yields `Parked`.
++    fn subscribe_after_await(
++        &self,
++        metrics: &web::Data<Arc<PrometheusMetrics>>,
++        job: Arc<Job>,
++    ) -> Attach {
++        if *job.done.borrow() == JobState::Running {
++            let rx = job.tx.subscribe();
++            metrics.nar_clients_attached_total.inc();
++            Attach::Live(BroadcastBody::new(
++                rx,
++                job.nar_size,
++                job.done.clone(),
++                Arc::clone(&**metrics),
++            ))
++        } else {
++            Attach::Parked(job.done.clone())
++        }
++    }
++}
++
++/// The future type driven by `BroadcastBody`: it owns the receiver (moved in)
++/// and returns it back alongside the recv result, so there is exactly one
++/// receiver and no self-reference.
++type RecvFut = Pin<
++    Box<
++        dyn Future<
++                Output = (
++                    broadcast::Receiver<Bytes>,
++                    Result<Bytes, broadcast::error::RecvError>,
++                ),
++            > + Send,
++    >,
++>;
++
++/// A `Stream` of `Result<Bytes, io::Error>` over a broadcast receiver, for use
++/// with actix `SizedStream`. `Lagged` ends the client with an error; a clean
++/// `Closed` after a **successful** job is EOF; a `Closed` after a **failed**
++/// job (e.g. truncated upstream, daemon reject) yields an error so the client
++/// never mistakes a partial NAR for a complete one.
++///
++/// The receiver is the single source of truth. When idle it lives in `rx`; when
++/// awaiting the next message it is moved into `fut` and handed back on
++/// completion — so there is never a second receiver advancing independently.
++pub(crate) struct BroadcastBody {
++    rx: Option<broadcast::Receiver<Bytes>>,
++    fut: Option<RecvFut>,
++    nar_size: u64,
++    /// Terminal-state signal, checked on `Closed` to distinguish a completed
++    /// job (clean EOF) from a failed one (error out the client).
++    done: watch::Receiver<JobState>,
++    /// Metrics handle used to increment `nar_clients_dropped_total` on `Lagged`.
++    metrics: Arc<PrometheusMetrics>,
++}
++
++impl BroadcastBody {
++    pub(crate) fn new(
++        rx: broadcast::Receiver<Bytes>,
++        nar_size: u64,
++        done: watch::Receiver<JobState>,
++        metrics: Arc<PrometheusMetrics>,
++    ) -> Self {
++        Self {
++            rx: Some(rx),
++            fut: None,
++            nar_size,
++            done,
++            metrics,
++        }
++    }
++
++    pub(crate) fn nar_size(&self) -> u64 {
++        self.nar_size
++    }
++}
++
++impl Stream for BroadcastBody {
++    type Item = Result<Bytes, std::io::Error>;
++
++    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
++        let this = self.get_mut();
++
++        // Arm the recv future if idle, moving the sole receiver into it.
++        if this.fut.is_none() {
++            let mut rx = this.rx.take().expect("receiver present when idle");
++            this.fut = Some(Box::pin(async move {
++                let res = rx.recv().await;
++                (rx, res)
++            }));
++        }
++
++        let fut = this.fut.as_mut().unwrap();
++        match fut.as_mut().poll(cx) {
++            Poll::Ready((rx, res)) => {
++                // Return the receiver to its idle slot for the next poll.
++                this.fut = None;
++                this.rx = Some(rx);
++                match res {
++                    Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
++                    Err(broadcast::error::RecvError::Closed) => {
++                        // The channel closed because the fan-out task ended and
++                        // dropped its senders. Distinguish success (clean EOF)
++                        // from failure (error the client so a partial NAR is not
++                        // mistaken for a complete one).
++                        if *this.done.borrow() == JobState::Failed {
++                            Poll::Ready(Some(Err(std::io::Error::other("nar job failed"))))
++                        } else {
++                            Poll::Ready(None)
++                        }
++                    }
++                    Err(broadcast::error::RecvError::Lagged(_)) => {
++                        this.metrics.nar_clients_dropped_total.inc();
++                        Poll::Ready(Some(Err(std::io::Error::other("lagged"))))
++                    }
++                }
++            }
++            Poll::Pending => Poll::Pending,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use futures_util::StreamExt as _;
++    use std::path::{Path, PathBuf};
++    use std::process::Command;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++    use tokio::net::TcpListener;
++
++    const SIGNING_KEY: &str = include_str!("../../tests/cache.sk");
++    const PUBLIC_KEY: &str = include_str!("../../tests/cache.pk");
++
++    fn nix_env(root: &Path) -> Vec<(String, String)> {
++        let store = root.join("store");
++        let state = root.join("var/nix");
++        vec![
++            ("NIX_STORE_DIR".into(), store.display().to_string()),
++            ("NIX_STATE_DIR".into(), state.display().to_string()),
++            ("NIX_LOG_DIR".into(), state.join("log").display().to_string()),
++            ("NIX_DATA_DIR".into(), root.join("share").display().to_string()),
++            ("NIX_CONF_DIR".into(), root.join("etc").display().to_string()),
++            ("XDG_CACHE_HOME".into(), root.join("cache").display().to_string()),
++            ("NIX_REMOTE".into(), String::new()),
++        ]
++    }
++
++    fn run_nix(args: &[&str], env: &[(String, String)]) -> Result<String, String> {
++        let mut cmd = Command::new(args[0]);
++        cmd.args(&args[1..]);
++        cmd.env_remove("NIX_REMOTE");
++        for (k, v) in env {
++            cmd.env(k, v);
++        }
++        let out = cmd.output().map_err(|e| format!("spawn {}: {e}", args[0]))?;
++        if !out.status.success() {
++            return Err(format!(
++                "{} failed: {}",
++                args[0],
++                String::from_utf8_lossy(&out.stderr)
++            ));
++        }
++        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
++    }
++
++    /// Everything the fake upstream needs to serve one path, plus the golden
++    /// decompressed NAR bytes and the destination store layout.
++    struct Fixture {
++        _tmp: tempfile::TempDir,
++        store_dir: PathBuf,
++        state_dir: PathBuf,
++        conf_dir: PathBuf,
++        socket: PathBuf,
++        store_path_hash: String,
++        narinfo_text: String,
++        nar_xz: Vec<u8>,
++        golden_nar: Vec<u8>,
++        _daemon: DaemonGuard,
++    }
++
++    struct DaemonGuard(std::process::Child);
++    impl Drop for DaemonGuard {
++        fn drop(&mut self) {
++            let _ = self.0.kill();
++            let _ = self.0.wait();
++        }
++    }
++
++    /// Build a signed binary cache for one small path, tear the path back out of
++    /// the store so it's a genuine miss, then start a nix-daemon on that store
++    /// (with our public key trusted) and return the artifacts to serve.
++    async fn make_fixture() -> Fixture {
++        make_fixture_with_payload("streaming NAR job integration test payload\n").await
++    }
++
++    /// Same as [`make_fixture`] but with a caller-chosen payload, so distinct
++    /// payloads yield distinct store-path hashes (for concurrency tests).
++    async fn make_fixture_with_payload(payload: &str) -> Fixture {
++        make_fixture_with_compression(payload, "xz").await
++    }
++
++    /// Same as [`make_fixture_with_payload`] but also chooses the upstream NAR
++    /// compression, so tests can exercise each decoder path (xz historically,
++    /// zstd as cache.nixos.org serves today).
++    async fn make_fixture_with_compression(payload: &str, compression: &str) -> Fixture {
++        let tmp = tempfile::Builder::new()
++            .prefix("streamthrough")
++            .tempdir()
++            .unwrap();
++        // Canonicalise to keep the socket path under sun_path's limit.
++        let root = tmp.path().canonicalize().unwrap();
++        let store_dir = root.join("store");
++        let state_dir = root.join("var/nix");
++        let conf_dir = root.join("etc");
++        std::fs::create_dir_all(&conf_dir).unwrap();
++        let env = nix_env(&root);
++
++        run_nix(
++            &[
++                "nix-store",
++                "--init",
++                "--store",
++                &format!(
++                    "local?store={}&state={}",
++                    store_dir.display(),
++                    state_dir.display()
++                ),
++            ],
++            &env,
++        )
++        .unwrap();
++
++        // Add a small path to the store.
++        let content_file = root.join("payload.txt");
++        std::fs::write(&content_file, payload).unwrap();
++        let store_path = run_nix(&["nix-store", "--add", content_file.to_str().unwrap()], &env).unwrap();
++        let store_path_hash = Path::new(&store_path)
++            .file_name()
++            .unwrap()
++            .to_str()
++            .unwrap()
++            .split('-')
++            .next()
++            .unwrap()
++            .to_string();
++
++        // Golden decompressed NAR (what every client body must equal).
++        let golden_nar = {
++            let out = Command::new("nix-store")
++                .args(["--dump", &store_path])
++                .envs(env.iter().cloned())
++                .env_remove("NIX_REMOTE")
++                .output()
++                .unwrap();
++            assert!(out.status.success(), "nix-store --dump failed");
++            out.stdout
++        };
++
++        // Produce a signed, compressed binary cache via `nix copy`.
++        let key_file = root.join("cache.sk");
++        std::fs::write(&key_file, SIGNING_KEY.trim()).unwrap();
++        let bc = root.join("bc");
++        run_nix(
++            &[
++                "nix",
++                "--extra-experimental-features",
++                "nix-command",
++                "copy",
++                "--to",
++                &format!("file://{}?compression={compression}", bc.display()),
++                "--secret-key-files",
++                key_file.to_str().unwrap(),
++                &store_path,
++            ],
++            &env,
++        )
++        .unwrap();
++
++        let narinfo_text = std::fs::read_to_string(bc.join(format!("{store_path_hash}.narinfo"))).unwrap();
++        // Find the nar url from the narinfo and read the compressed bytes.
++        let nar_url = narinfo_text
++            .lines()
++            .find_map(|l| l.strip_prefix("URL: "))
++            .unwrap()
++            .trim()
++            .to_string();
++        let nar_xz = std::fs::read(bc.join(&nar_url)).unwrap();
++
++        // Delete the path so the destination store is a genuine miss.
++        run_nix(&["nix-store", "--delete", &store_path], &env).unwrap();
++        assert!(
++            !Path::new(&store_path).exists(),
++            "path should be gone after delete"
++        );
++
++        // Trust our public key so add_to_store_nar (dont_check_sigs=false) accepts.
++        std::fs::write(
++            conf_dir.join("nix.conf"),
++            format!("trusted-public-keys = {}\n", PUBLIC_KEY.trim()),
++        )
++        .unwrap();
++
++        // Start a nix-daemon on this store.
++        let socket = root.join("daemon.sock");
++        let mut cmd = Command::new("nix-daemon");
++        for (k, v) in &env {
++            cmd.env(k, v);
++        }
++        cmd.env("NIX_DAEMON_SOCKET_PATH", &socket)
++            .env_remove("NIX_REMOTE")
++            .stdin(std::process::Stdio::null());
++        let child = cmd.spawn().unwrap();
++        // Wait for the socket.
++        for _ in 0..600 {
++            if socket.exists() {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(socket.exists(), "daemon socket never appeared");
++
++        Fixture {
++            _tmp: tmp,
++            store_dir,
++            state_dir,
++            conf_dir,
++            socket,
++            store_path_hash,
++            narinfo_text,
++            nar_xz,
++            golden_nar,
++            _daemon: DaemonGuard(child),
++        }
++    }
++
++    /// A minimal HTTP/1.1 fake upstream. Serves `<hash>.narinfo` and the nar.xz;
++    /// counts nar.xz GETs; can optionally truncate the nar body to simulate a
++    /// broken upstream. Returns the bound base URL and the GET counter.
++    async fn spawn_upstream(
++        narinfo_text: String,
++        nar_url: String,
++        nar_xz: Vec<u8>,
++        truncate: bool,
++        nar_delay_ms: u64,
++    ) -> (String, Arc<AtomicUsize>) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let counter_task = counter.clone();
++        let nar_suffix = nar_url.trim_start_matches('/').to_string();
++
++        tokio::spawn(async move {
++            loop {
++                let (mut sock, _) = match listener.accept().await {
++                    Ok(s) => s,
++                    Err(_) => break,
++                };
++                let narinfo_text = narinfo_text.clone();
++                let nar_xz = nar_xz.clone();
++                let nar_suffix = nar_suffix.clone();
++                let counter = counter_task.clone();
++                tokio::spawn(async move {
++                    let mut buf = vec![0u8; 4096];
++                    let n = match sock.read(&mut buf).await {
++                        Ok(0) | Err(_) => return,
++                        Ok(n) => n,
++                    };
++                    let req = String::from_utf8_lossy(&buf[..n]);
++                    let path = req
++                        .lines()
++                        .next()
++                        .and_then(|l| l.split_whitespace().nth(1))
++                        .unwrap_or("/")
++                        .to_string();
++
++                    if path.ends_with(".narinfo") {
++                        let body = narinfo_text.as_bytes();
++                        let head = format!(
++                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/x-nix-narinfo\r\nConnection: close\r\n\r\n",
++                            body.len()
++                        );
++                        let _ = sock.write_all(head.as_bytes()).await;
++                        let _ = sock.write_all(body).await;
++                    } else if path.trim_start_matches('/').ends_with(&nar_suffix)
++                        || path.ends_with(".nar.xz")
++                    {
++                        counter.fetch_add(1, Ordering::SeqCst);
++                        // Hold the response briefly so all concurrent attachers
++                        // coalesce onto this one live job before it completes.
++                        if nar_delay_ms > 0 {
++                            tokio::time::sleep(std::time::Duration::from_millis(nar_delay_ms))
++                                .await;
++                        }
++                        if truncate {
++                            // Advertise the full length but send only a prefix,
++                            // then hang up: the client sees a short/broken body.
++                            let head = format!(
++                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-xz\r\nConnection: close\r\n\r\n",
++                                nar_xz.len()
++                            );
++                            let _ = sock.write_all(head.as_bytes()).await;
++                            let cut = nar_xz.len() / 2;
++                            let _ = sock.write_all(&nar_xz[..cut]).await;
++                            // Drop the socket to force a premature EOF.
++                        } else {
++                            let head = format!(
++                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-xz\r\nConnection: close\r\n\r\n",
++                                nar_xz.len()
++                            );
++                            let _ = sock.write_all(head.as_bytes()).await;
++                            let _ = sock.write_all(&nar_xz).await;
++                        }
++                    } else {
++                        let _ = sock
++                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++                            .await;
++                    }
++                    let _ = sock.flush().await;
++                });
++            }
++        });
++
++        (format!("http://{addr}"), counter)
++    }
++
++    fn make_config(fx: &Fixture, upstream_url: String) -> web::Data<Config> {
++        let mut cfg: Config = toml::from_str("").unwrap();
++        cfg.substitute_on_miss = true;
++        cfg.miss_upstream_url = upstream_url;
++        cfg.miss_daemon_socket = fx.socket.clone();
++        cfg.store = crate::store::Store::new(
++            fx.store_dir.as_os_str().as_encoded_bytes().to_vec(),
++            None,
++            fx.state_dir.join("db/db.sqlite"),
++        );
++        web::Data::new(cfg)
++    }
++
++    fn nar_url_from(narinfo: &str) -> String {
++        narinfo
++            .lines()
++            .find_map(|l| l.strip_prefix("URL: "))
++            .unwrap()
++            .trim()
++            .to_string()
++    }
++
++    fn path_is_valid(fx: &Fixture) -> bool {
++        let store_path = format!(
++            "{}/{}",
++            fx.store_dir.display(),
++            // reconstruct <hash>-<name> from the store dir listing
++            std::fs::read_dir(&fx.store_dir)
++                .ok()
++                .and_then(|mut d| d
++                    .find_map(|e| {
++                        let e = e.ok()?;
++                        let n = e.file_name().to_string_lossy().to_string();
++                        n.starts_with(&fx.store_path_hash).then_some(n)
++                    }))
++                .unwrap_or_default()
++        );
++        // If nothing matched, the path can't be valid.
++        if store_path.ends_with('/') {
++            // Fall back to a daemon query by hash via nix-store on the socket.
++        }
++        let env = nix_env(fx.conf_dir.parent().unwrap());
++        let mut cmd = Command::new("nix-store");
++        cmd.args(["-q", "--hash", &store_path]);
++        cmd.env("NIX_REMOTE", format!("unix://{}", fx.socket.display()));
++        for (k, v) in &env {
++            if k != "NIX_REMOTE" {
++                cmd.env(k, v);
++            }
++        }
++        cmd.output().map(|o| o.status.success()).unwrap_or(false)
++    }
++
++    async fn drain(mut body: BroadcastBody) -> Result<Vec<u8>, std::io::Error> {
++        let mut out = Vec::new();
++        while let Some(item) = body.next().await {
++            out.extend_from_slice(&item?);
++        }
++        Ok(out)
++    }
++
++    #[tokio::test]
++    async fn coalesces_and_converges() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream_url, counter) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 200).await;
++        let cfg = make_config(&fx, upstream_url);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        // N concurrent attachers for the same missing path, launched together
++        // (no stagger) so they all coalesce onto one live job.
++        const N: usize = 8;
++        let mut handles = Vec::new();
++        for _ in 0..N {
++            let reg = registry.clone();
++            let cfg = cfg.clone();
++            let metrics = metrics.clone();
++            let hash = fx.store_path_hash.clone();
++            handles.push(tokio::spawn(async move {
++                match reg.attach(cfg, metrics, &hash).await {
++                    Attach::Live(body) => drain(body).await,
++                    Attach::Parked(_) => Err(std::io::Error::other("unexpected Parked")),
++                }
++            }));
++        }
++
++        let mut bodies = Vec::new();
++        for h in handles {
++            bodies.push(h.await.unwrap().expect("client body errored"));
++        }
++
++        // Every client body equals the golden decompressed NAR.
++        for (i, b) in bodies.iter().enumerate() {
++            assert_eq!(b, &fx.golden_nar, "client {i} body != golden NAR");
++        }
++
++        // Exactly one upstream nar.xz GET (coalescing).
++        assert_eq!(
++            counter.load(Ordering::SeqCst),
++            1,
++            "expected exactly one upstream nar.xz GET"
++        );
++
++        // Give the store import a moment to settle, then assert the path is
++        // valid in the destination store.
++        for _ in 0..100 {
++            if path_is_valid(&fx) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(path_is_valid(&fx), "path did not become valid after job");
++    }
++
++    #[tokio::test]
++    async fn zstd_upstream_decodes_and_stores() {
++        // cache.nixos.org serves zstd NARs today; the job must decode a
++        // `.nar.zst` (not assume xz) and both stream it to the client and import
++        // it into the store. Before the compression-aware decoder this failed
++        // with "xz decode: stream/file format not recognized".
++        let fx = make_fixture_with_compression("zstd upstream decode test payload\n", "zstd").await;
++        assert!(
++            fx.narinfo_text.contains("Compression: zstd"),
++            "fixture narinfo is not zstd:\n{}",
++            fx.narinfo_text
++        );
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream_url, counter) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, upstream_url);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        let body = match registry.attach(cfg, metrics, &fx.store_path_hash).await {
++            Attach::Live(body) => drain(body).await.expect("client body errored"),
++            Attach::Parked(_) => panic!("unexpected Parked"),
++        };
++        // The client received the fully decoded NAR, not zstd bytes.
++        assert_eq!(body, fx.golden_nar, "client body != golden decoded NAR");
++        assert_eq!(counter.load(Ordering::SeqCst), 1, "expected one upstream GET");
++
++        for _ in 0..100 {
++            if path_is_valid(&fx) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(path_is_valid(&fx), "path did not become valid after zstd job");
++    }
++
++    #[test]
++    fn classify_import_serves_on_missing_reference() {
++        // A successful import means the path is cached.
++        assert_eq!(super::classify_import(Ok(())), Ok(true));
++        // A missing-reference rejection ("path '...' is not valid") means the
++        // NAR is fine but can't be registered yet: serve it, don't cache
++        // (this is the exact daemon error that used to 502 clients).
++        assert_eq!(
++            super::classify_import(Err("add_to_store_nar: AddToStoreNar: remote error: \
++                 path '/nix/store/n35z8vvlr7c5k1406n5bwd0f8h2hgj1j-gcc-15.2.0-lib' is not valid"
++                .to_string())),
++            Ok(false)
++        );
++        // Any other failure (corruption, daemon gone) must fail the client.
++        assert!(super::classify_import(Err("nar hash mismatch".to_string())).is_err());
++        assert!(super::classify_import(Err("daemon connect: broken pipe".to_string())).is_err());
++    }
++
++    #[tokio::test]
++    async fn lead_client_disconnect_still_converges() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream_url, _counter) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, upstream_url);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        // Lead client attaches then immediately drops its body mid-stream.
++        match registry
++            .attach(cfg.clone(), metrics.clone(), &fx.store_path_hash)
++            .await
++        {
++            Attach::Live(body) => {
++                // Drop after reading nothing (or almost nothing).
++                drop(body);
++            }
++            other => panic!("expected Live, got {}", attach_name(&other)),
++        }
++
++        // The job must still run to completion and make the path valid.
++        for _ in 0..200 {
++            if path_is_valid(&fx) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(
++            path_is_valid(&fx),
++            "path did not become valid after lead-client disconnect"
++        );
++    }
++
++    #[tokio::test]
++    async fn truncated_upstream_rejects() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        // truncate=true: upstream sends half the nar.xz then hangs up.
++        let (upstream_url, _counter) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), true, 0).await;
++        let cfg = make_config(&fx, upstream_url);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        let body_res = match registry
++            .attach(cfg.clone(), metrics.clone(), &fx.store_path_hash)
++            .await
++        {
++            Attach::Live(body) => drain(body).await,
++            other => panic!("expected Live, got {}", attach_name(&other)),
++        };
++        // The client body must end in error (broken/short NAR).
++        assert!(
++            body_res.is_err(),
++            "expected client body to error on truncated upstream"
++        );
++
++        // The path must NOT be valid: the daemon rejects the incomplete NAR.
++        // Give the failed job time to settle.
++        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
++        assert!(
++            !path_is_valid(&fx),
++            "truncated upstream must not yield a valid path"
++        );
++    }
++
++    /// Tracks concurrent narinfo handlers across one or more fake upstreams:
++    /// `cur` is the number in flight right now, `max` the high-water mark.
++    #[derive(Clone, Default)]
++    struct NarinfoGauge {
++        cur: Arc<AtomicUsize>,
++        max: Arc<AtomicUsize>,
++    }
++    impl NarinfoGauge {
++        fn enter(&self) {
++            let now = self.cur.fetch_add(1, Ordering::SeqCst) + 1;
++            self.max.fetch_max(now, Ordering::SeqCst);
++        }
++        fn leave(&self) {
++            self.cur.fetch_sub(1, Ordering::SeqCst);
++        }
++        fn max(&self) -> usize {
++            self.max.load(Ordering::SeqCst)
++        }
++    }
++
++    /// Like [`spawn_upstream`] but the `.narinfo` handler holds a shared
++    /// concurrency gauge for `narinfo_delay_ms` before replying, so a test can
++    /// observe whether two distinct-hash narinfo fetches *overlapped*. The
++    /// nar.xz path is served immediately (no delay, no truncation).
++    async fn spawn_upstream_narinfo_gated(
++        narinfo_text: String,
++        nar_url: String,
++        nar_xz: Vec<u8>,
++        gauge: NarinfoGauge,
++        narinfo_delay_ms: u64,
++    ) -> String {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let nar_suffix = nar_url.trim_start_matches('/').to_string();
++
++        tokio::spawn(async move {
++            loop {
++                let (mut sock, _) = match listener.accept().await {
++                    Ok(s) => s,
++                    Err(_) => break,
++                };
++                let narinfo_text = narinfo_text.clone();
++                let nar_xz = nar_xz.clone();
++                let nar_suffix = nar_suffix.clone();
++                let gauge = gauge.clone();
++                tokio::spawn(async move {
++                    let mut buf = vec![0u8; 4096];
++                    let n = match sock.read(&mut buf).await {
++                        Ok(0) | Err(_) => return,
++                        Ok(n) => n,
++                    };
++                    let req = String::from_utf8_lossy(&buf[..n]);
++                    let path = req
++                        .lines()
++                        .next()
++                        .and_then(|l| l.split_whitespace().nth(1))
++                        .unwrap_or("/")
++                        .to_string();
++
++                    if path.ends_with(".narinfo") {
++                        // Record overlap: hold the gauge across the delay so two
++                        // concurrent distinct-hash creations register max >= 2.
++                        gauge.enter();
++                        if narinfo_delay_ms > 0 {
++                            tokio::time::sleep(std::time::Duration::from_millis(narinfo_delay_ms))
++                                .await;
++                        }
++                        gauge.leave();
++                        let body = narinfo_text.as_bytes();
++                        let head = format!(
++                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/x-nix-narinfo\r\nConnection: close\r\n\r\n",
++                            body.len()
++                        );
++                        let _ = sock.write_all(head.as_bytes()).await;
++                        let _ = sock.write_all(body).await;
++                    } else if path.trim_start_matches('/').ends_with(&nar_suffix)
++                        || path.ends_with(".nar.xz")
++                    {
++                        let head = format!(
++                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-xz\r\nConnection: close\r\n\r\n",
++                            nar_xz.len()
++                        );
++                        let _ = sock.write_all(head.as_bytes()).await;
++                        let _ = sock.write_all(&nar_xz).await;
++                    } else {
++                        let _ = sock
++                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++                            .await;
++                    }
++                    let _ = sock.flush().await;
++                });
++            }
++        });
++
++        format!("http://{addr}")
++    }
++
++    /// Guarantee #2: two DISTINCT store paths requested concurrently both
++    /// converge (both become valid), AND their upstream narinfo fetches overlap
++    /// rather than serialize. The narinfo handler holds a shared gauge across a
++    /// delay; if creation for distinct hashes ran under one global lock (the old
++    /// behavior), the second fetch could not start until the first finished and
++    /// the gauge would peak at 1. With per-hash single-flight the two creations
++    /// proceed in parallel and the gauge peaks at 2.
++    #[tokio::test]
++    async fn distinct_paths_create_concurrently() {
++        let fx_a = make_fixture_with_payload("distinct concurrency payload A\n").await;
++        let fx_b = make_fixture_with_payload("distinct concurrency payload B\n").await;
++        assert_ne!(
++            fx_a.store_path_hash, fx_b.store_path_hash,
++            "test needs two distinct hashes"
++        );
++
++        let gauge = NarinfoGauge::default();
++        // A generous delay so the two narinfo handlers are guaranteed to be
++        // in-flight at the same time when creation is concurrent; the assertion
++        // is on max concurrency, not on wall-clock, so it is not timing-flaky.
++        let delay_ms = 400;
++        let url_a = spawn_upstream_narinfo_gated(
++            fx_a.narinfo_text.clone(),
++            nar_url_from(&fx_a.narinfo_text),
++            fx_a.nar_xz.clone(),
++            gauge.clone(),
++            delay_ms,
++        )
++        .await;
++        let url_b = spawn_upstream_narinfo_gated(
++            fx_b.narinfo_text.clone(),
++            nar_url_from(&fx_b.narinfo_text),
++            fx_b.nar_xz.clone(),
++            gauge.clone(),
++            delay_ms,
++        )
++        .await;
++
++        let cfg_a = make_config(&fx_a, url_a);
++        let cfg_b = make_config(&fx_b, url_b);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        // One shared registry: distinct hashes must not serialize on it.
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        let (ra, rb) = (registry.clone(), registry.clone());
++        let (ma, mb) = (metrics.clone(), metrics.clone());
++        let (ha, hb) = (fx_a.store_path_hash.clone(), fx_b.store_path_hash.clone());
++        let ta = tokio::spawn(async move {
++            match ra.attach(cfg_a, ma, &ha).await {
++                Attach::Live(body) => drain(body).await,
++                Attach::Parked(_) => Err(std::io::Error::other("unexpected Parked A")),
++            }
++        });
++        let tb = tokio::spawn(async move {
++            match rb.attach(cfg_b, mb, &hb).await {
++                Attach::Live(body) => drain(body).await,
++                Attach::Parked(_) => Err(std::io::Error::other("unexpected Parked B")),
++            }
++        });
++
++        let body_a = ta.await.unwrap().expect("client A body errored");
++        let body_b = tb.await.unwrap().expect("client B body errored");
++        assert_eq!(body_a, fx_a.golden_nar, "path A body != golden NAR");
++        assert_eq!(body_b, fx_b.golden_nar, "path B body != golden NAR");
++
++        // The narinfo fetches overlapped: distinct-hash creation is concurrent.
++        assert!(
++            gauge.max() >= 2,
++            "expected overlapping narinfo fetches (max concurrency >= 2), got {}",
++            gauge.max()
++        );
++
++        // Both paths converge in their respective stores.
++        for _ in 0..100 {
++            if path_is_valid(&fx_a) && path_is_valid(&fx_b) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(path_is_valid(&fx_a), "path A did not become valid");
++        assert!(path_is_valid(&fx_b), "path B did not become valid");
++    }
++
++    fn attach_name(a: &Attach) -> &'static str {
++        match a {
++            Attach::Live(_) => "Live",
++            Attach::Parked(_) => "Parked",
++        }
++    }
++
++    /// Delete `fx`'s store path so a fresh `attach` is a genuine miss again.
++    /// Returns once the path is gone.
++    fn delete_store_path(fx: &Fixture) {
++        let entry = std::fs::read_dir(&fx.store_dir).ok().and_then(|mut d| {
++            d.find_map(|e| {
++                let e = e.ok()?;
++                let n = e.file_name().to_string_lossy().to_string();
++                n.starts_with(&fx.store_path_hash).then_some(n)
++            })
++        });
++        if let Some(name) = entry {
++            let store_path = format!("{}/{}", fx.store_dir.display(), name);
++            let env = nix_env(fx.conf_dir.parent().unwrap());
++            let mut cmd = Command::new("nix-store");
++            cmd.args(["--delete", &store_path]);
++            cmd.env("NIX_REMOTE", format!("unix://{}", fx.socket.display()));
++            for (k, v) in &env {
++                if k != "NIX_REMOTE" {
++                    cmd.env(k, v);
++                }
++            }
++            let _ = cmd.output();
++        }
++    }
++
++    /// Regression test for the creator-cancellation wedge.
++    ///
++    /// Reproduces the exact production window: the creator installs the per-hash
++    /// `InProgress` single-flight slot and begins the upstream narinfo RTT, a
++    /// same-hash waiter coalesces onto that shared creation, and THEN the
++    /// creator's request future is dropped (simulating a client disconnect during
++    /// the narinfo RTT — the actix handler awaits `attach` inline, so dropping the
++    /// returned future is exactly what a disconnect does).
++    ///
++    /// Simulation mechanism: the fake upstream delays the `.narinfo` reply, so the
++    /// creation stays in-flight. We drive the creator's `attach` future to
++    /// `Pending` with `futures::poll!` (guaranteeing it has taken the map lock,
++    /// installed `InProgress`, and issued the narinfo GET), spawn the waiter so it
++    /// coalesces onto the same `Shared`, then `drop` the creator's future. Because
++    /// the waiter keeps driving the `Shared`, the creation completes.
++    ///
++    /// Proves:
++    ///   (a) the waiter is served the correct golden NAR and the path becomes
++    ///       valid — convergence never depended on the creator;
++    ///   (b) the slot is finalized despite the creator being dropped: after the
++    ///       job finishes and we delete the path (GC), a fresh `attach` for the
++    ///       same hash RE-CREATES the job (issues a second upstream `.nar.xz`
++    ///       GET) instead of returning a stale terminal `Parked` off a wedged
++    ///       `InProgress(completed)` slot. Under the old bug the second fetch
++    ///       count would stay 1 and the fresh attach would 404 forever.
++    #[tokio::test]
++    async fn creator_cancel_still_finalizes_slot() {
++        use futures_util::poll;
++
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        // Delay the narinfo reply so the creation is guaranteed in-flight when we
++        // drop the creator. The upstream also counts .nar.xz GETs so we can prove
++        // a fresh fetch happens on re-create.
++        let (upstream_url, counter) = spawn_upstream_narinfo_delayed(
++            fx.narinfo_text.clone(),
++            nar_url,
++            fx.nar_xz.clone(),
++            300,
++        )
++        .await;
++        let cfg = make_config(&fx, upstream_url);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache));
++
++        // 1. Creator: drive it once so it installs the InProgress slot and issues
++        //    the (delayed) narinfo GET, then leave it Pending.
++        let mut creator = Box::pin(registry.attach(
++            cfg.clone(),
++            metrics.clone(),
++            &fx.store_path_hash,
++        ));
++        let polled = poll!(creator.as_mut());
++        assert!(
++            polled.is_pending(),
++            "creator should still be mid-creation (narinfo RTT) — delay too short"
++        );
++
++        // 2. Waiter coalesces onto the same in-flight creation.
++        let waiter = {
++            let reg = registry.clone();
++            let cfg = cfg.clone();
++            let metrics = metrics.clone();
++            let hash = fx.store_path_hash.clone();
++            tokio::spawn(async move {
++                match reg.attach(cfg, metrics, &hash).await {
++                    Attach::Live(body) => drain(body).await,
++                    Attach::Parked(_) => Err(std::io::Error::other("waiter unexpectedly Parked")),
++                }
++            })
++        };
++        // Let the waiter reach its await on the shared creation.
++        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++
++        // 3. Drop the creator's request future mid-creation (client disconnect).
++        drop(creator);
++
++        // (a) The waiter is served the correct NAR and the path becomes valid.
++        let body = waiter.await.unwrap().expect("waiter body errored");
++        assert_eq!(body, fx.golden_nar, "waiter body != golden NAR");
++        for _ in 0..200 {
++            if path_is_valid(&fx) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(
++            path_is_valid(&fx),
++            "path did not become valid after creator-cancel"
++        );
++        assert_eq!(
++            counter.load(Ordering::SeqCst),
++            1,
++            "expected exactly one upstream nar.xz GET for the coalesced cohort"
++        );
++
++        // Let the fan-out finish and reap its Live slot (registry.remove on end).
++        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
++
++        // (b) GC the path, then a fresh attach must RE-CREATE (fresh fetch), not
++        //     return a stale terminal Parked off a wedged InProgress slot.
++        delete_store_path(&fx);
++        assert!(!path_is_valid(&fx), "path should be gone after delete");
++
++        let reattach = registry
++            .attach(cfg.clone(), metrics.clone(), &fx.store_path_hash)
++            .await;
++        match reattach {
++            Attach::Live(body) => {
++                let b = drain(body).await.expect("re-created body errored");
++                assert_eq!(b, fx.golden_nar, "re-created body != golden NAR");
++            }
++            Attach::Parked(_) => panic!(
++                "slot was wedged: fresh attach returned stale Parked instead of re-creating"
++            ),
++        }
++        for _ in 0..200 {
++            if path_is_valid(&fx) {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        assert!(path_is_valid(&fx), "re-created job did not make the path valid");
++        // A second, fresh upstream nar.xz GET proves the slot was finalized (not
++        // wedged): the registry re-resolved rather than serving a stale terminal.
++        assert_eq!(
++            counter.load(Ordering::SeqCst),
++            2,
++            "fresh attach after GC must issue a second upstream nar.xz GET (slot finalized)"
++        );
++    }
++
++    /// Like [`spawn_upstream`] but delays the `.narinfo` reply by
++    /// `narinfo_delay_ms` (nar.xz served immediately, no truncation) and still
++    /// returns a nar.xz GET counter. Used to widen the creation in-flight window
++    /// for the creator-cancellation regression test.
++    async fn spawn_upstream_narinfo_delayed(
++        narinfo_text: String,
++        nar_url: String,
++        nar_xz: Vec<u8>,
++        narinfo_delay_ms: u64,
++    ) -> (String, Arc<AtomicUsize>) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let counter_task = counter.clone();
++        let nar_suffix = nar_url.trim_start_matches('/').to_string();
++
++        tokio::spawn(async move {
++            loop {
++                let (mut sock, _) = match listener.accept().await {
++                    Ok(s) => s,
++                    Err(_) => break,
++                };
++                let narinfo_text = narinfo_text.clone();
++                let nar_xz = nar_xz.clone();
++                let nar_suffix = nar_suffix.clone();
++                let counter = counter_task.clone();
++                tokio::spawn(async move {
++                    let mut buf = vec![0u8; 4096];
++                    let n = match sock.read(&mut buf).await {
++                        Ok(0) | Err(_) => return,
++                        Ok(n) => n,
++                    };
++                    let req = String::from_utf8_lossy(&buf[..n]);
++                    let path = req
++                        .lines()
++                        .next()
++                        .and_then(|l| l.split_whitespace().nth(1))
++                        .unwrap_or("/")
++                        .to_string();
++
++                    if path.ends_with(".narinfo") {
++                        if narinfo_delay_ms > 0 {
++                            tokio::time::sleep(std::time::Duration::from_millis(narinfo_delay_ms))
++                                .await;
++                        }
++                        let body = narinfo_text.as_bytes();
++                        let head = format!(
++                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/x-nix-narinfo\r\nConnection: close\r\n\r\n",
++                            body.len()
++                        );
++                        let _ = sock.write_all(head.as_bytes()).await;
++                        let _ = sock.write_all(body).await;
++                    } else if path.trim_start_matches('/').ends_with(&nar_suffix)
++                        || path.ends_with(".nar.xz")
++                    {
++                        counter.fetch_add(1, Ordering::SeqCst);
++                        let head = format!(
++                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-xz\r\nConnection: close\r\n\r\n",
++                            nar_xz.len()
++                        );
++                        let _ = sock.write_all(head.as_bytes()).await;
++                        let _ = sock.write_all(&nar_xz).await;
++                    } else {
++                        let _ = sock
++                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++                            .await;
++                    }
++                    let _ = sock.flush().await;
++                });
++            }
++        });
++
++        (format!("http://{addr}"), counter)
++    }
++}
+diff --git a/harmonia-cache/src/narinfo.rs b/harmonia-cache/src/narinfo.rs
+index f734d1d..203595f 100644
+--- a/harmonia-cache/src/narinfo.rs
++++ b/harmonia-cache/src/narinfo.rs
+@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ 
+ use crate::config::Config;
+-use crate::{cache_control_max_age_1d, some_or_404};
++use crate::cache_control_max_age_1d;
+ use harmonia_store_core::signature::{SecretKey, fingerprint_path};
+ 
+ #[derive(Debug, Deserialize)]
+@@ -188,10 +188,18 @@ fn format_narinfo_txt(narinfo: &NarInfo) -> Vec<u8> {
+     result
+ }
+ 
++fn not_found_missed_hash() -> HttpResponse {
++    HttpResponse::NotFound()
++        .insert_header(crate::cache_control_no_store())
++        .body("missed hash")
++}
++
+ pub(crate) async fn get(
+     hash: web::Path<String>,
+     param: web::Query<Param>,
+     settings: web::Data<Config>,
++    metrics: web::Data<std::sync::Arc<crate::prometheus::PrometheusMetrics>>,
++    cache: web::Data<std::sync::Arc<crate::narinfo_cache::NarInfoCache>>,
+ ) -> crate::ServerResult {
+     let hash = hash.into_inner();
+     // Reject malformed hash parts up front so the `path >= ?` index scan in
+@@ -205,7 +213,69 @@ pub(crate) async fn get(
+         })?
+         .to_string();
+ 
+-    let info = some_or_404!(settings.store.query_path_info_by_hash_part(&hash)?);
++    let info = match settings.store.query_path_info_by_hash_part(&hash)? {
++        Some(info) => info,
++        None => {
++            if settings.substitute_on_miss {
++                let up = match cache.get(&hash) {
++                    Some(up) => up,
++                    None => match crate::upstream::get_text(
++                        &settings.miss_upstream_url,
++                        &format!("/{hash}.narinfo"),
++                    )
++                    .await
++                    {
++                        Ok(Some(text)) => {
++                            match crate::upstream_narinfo::parse_upstream_narinfo(
++                                settings.store.store_dir(),
++                                &text,
++                            ) {
++                                Ok(u) => {
++                                    let a = std::sync::Arc::new(u);
++                                    cache.insert(hash.clone(), a.clone());
++                                    a
++                                }
++                                Err(e) => {
++                                    // Upstream served a narinfo we couldn't
++                                    // parse — a real problem, not a normal miss.
++                                    tracing::warn!(
++                                        hash = %hash,
++                                        "substitute-on-miss: upstream narinfo parse failed: {e}"
++                                    );
++                                    return Ok(not_found_missed_hash());
++                                }
++                            }
++                        }
++                        // Clean upstream miss: the path isn't on the upstream
++                        // either. Expected; keep it quiet (debug only).
++                        Ok(None) => {
++                            tracing::debug!(
++                                hash = %hash,
++                                "substitute-on-miss: upstream has no narinfo (404)"
++                            );
++                            return Ok(not_found_missed_hash());
++                        }
++                        // Real fetch failure (connection/TLS/5xx). This is the
++                        // line that would have named the network-sandbox block
++                        // outright instead of a silent 404.
++                        Err(e) => {
++                            tracing::warn!(
++                                hash = %hash,
++                                "substitute-on-miss: upstream narinfo fetch failed: {e}"
++                            );
++                            return Ok(not_found_missed_hash());
++                        }
++                    },
++                };
++                metrics.narinfo_misses_total.inc();
++                return Ok(HttpResponse::Ok()
++                    .insert_header((http::header::CONTENT_TYPE, "text/x-nix-narinfo"))
++                    .insert_header(crate::cache_control_no_store())
++                    .body(up.client_narinfo.clone()));
++            }
++            return Ok(not_found_missed_hash());
++        }
++    };
+     let narinfo = build_narinfo(
+         settings.store.store_dir(),
+         settings.store.virtual_store(),
+diff --git a/harmonia-cache/src/narinfo_cache.rs b/harmonia-cache/src/narinfo_cache.rs
+new file mode 100644
+index 0000000..b60977a
+--- /dev/null
++++ b/harmonia-cache/src/narinfo_cache.rs
+@@ -0,0 +1,88 @@
++//! Bounded, TTL'd LRU of upstream narinfos for in-flight (fetched but not yet
++//! materialized) paths. Keyed by store-path hash. Entries are normally
++//! removed when their NAR job completes; size+TTL are backstops. In-memory,
++//! no persistence.
++
++use std::num::NonZeroUsize;
++use std::sync::{Arc, Mutex};
++use std::time::{Duration, Instant};
++
++use lru::LruCache;
++
++use crate::upstream_narinfo::UpstreamNarInfo;
++
++pub(crate) struct NarInfoCache {
++    inner: Mutex<LruCache<String, (Instant, Arc<UpstreamNarInfo>)>>,
++    ttl: Duration,
++}
++
++impl NarInfoCache {
++    pub(crate) fn new(cap: usize, ttl: Duration) -> Self {
++        let cap = NonZeroUsize::new(cap.max(1)).unwrap();
++        Self { inner: Mutex::new(LruCache::new(cap)), ttl }
++    }
++
++    pub(crate) fn insert(&self, hash: String, v: Arc<UpstreamNarInfo>) {
++        self.inner.lock().unwrap().put(hash, (Instant::now(), v));
++    }
++
++    pub(crate) fn get(&self, hash: &str) -> Option<Arc<UpstreamNarInfo>> {
++        let mut g = self.inner.lock().unwrap();
++        match g.get(hash) {
++            Some((t, v)) if t.elapsed() < self.ttl => Some(v.clone()),
++            Some(_) => {
++                g.pop(hash);
++                None
++            }
++            None => None,
++        }
++    }
++
++    pub(crate) fn remove(&self, hash: &str) {
++        self.inner.lock().unwrap().pop(hash);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const NARINFO: &str = "\
++StorePath: /nix/store/55xkmqns51sw7nrgykp5vnz36w4fr3cw-x\n\
++URL: nar/1abc.nar.xz\n\
++Compression: xz\n\
++FileHash: sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s\n\
++FileSize: 10\n\
++NarHash: sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s\n\
++NarSize: 20\n";
++
++    fn dummy() -> Arc<UpstreamNarInfo> {
++        use harmonia_store_core::store_path::StoreDir;
++        let sd = StoreDir::new("/nix/store").unwrap();
++        Arc::new(crate::upstream_narinfo::parse_upstream_narinfo(&sd, NARINFO).unwrap())
++    }
++
++    #[test]
++    fn ttl_expires_on_read() {
++        let c = NarInfoCache::new(4, Duration::from_millis(0));
++        c.insert("h".into(), dummy());
++        assert!(c.get("h").is_none()); // ttl 0 => immediately absent
++    }
++
++    #[test]
++    fn remove_drops_entry() {
++        let c = NarInfoCache::new(4, Duration::from_secs(60));
++        c.insert("h".into(), dummy());
++        assert!(c.get("h").is_some());
++        c.remove("h");
++        assert!(c.get("h").is_none());
++    }
++
++    #[test]
++    fn size_eviction() {
++        let c = NarInfoCache::new(1, Duration::from_secs(60));
++        c.insert("a".into(), dummy());
++        c.insert("b".into(), dummy());
++        assert!(c.get("a").is_none()); // evicted by "b"
++    }
++}
+diff --git a/harmonia-cache/src/prometheus.rs b/harmonia-cache/src/prometheus.rs
+index 06e7ce0..57aedec 100644
+--- a/harmonia-cache/src/prometheus.rs
++++ b/harmonia-cache/src/prometheus.rs
+@@ -5,7 +5,7 @@ use actix_web::{
+     web,
+ };
+ use prometheus::{
+-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
++    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry, TextEncoder,
+ };
+ use std::{
+     future::{Future, Ready, ready},
+@@ -20,6 +20,13 @@ pub struct PrometheusMetrics {
+     pub registry: Registry,
+     http_requests_total: IntCounterVec,
+     http_requests_duration: HistogramVec,
++    // stream-through NAR cache
++    pub narinfo_misses_total: IntCounter,
++    pub nar_jobs_started_total: IntCounter,
++    pub nar_jobs_completed_total: IntCounter,
++    pub nar_jobs_failed_total: IntCounter,
++    pub nar_clients_attached_total: IntCounter,
++    pub nar_clients_dropped_total: IntCounter,
+ }
+ 
+ impl PrometheusMetrics {
+@@ -45,13 +52,50 @@ impl PrometheusMetrics {
+             &["method", "path", "status"],
+         )?;
+ 
++        let narinfo_misses_total = IntCounter::new(
++            "harmonia_narinfo_misses_total",
++            "narinfo requests for paths absent from the local store",
++        )?;
++        let nar_jobs_started_total = IntCounter::new(
++            "harmonia_nar_jobs_started_total",
++            "stream-through NAR jobs started",
++        )?;
++        let nar_jobs_completed_total = IntCounter::new(
++            "harmonia_nar_jobs_completed_total",
++            "stream-through NAR jobs that completed and imported the path",
++        )?;
++        let nar_jobs_failed_total = IntCounter::new(
++            "harmonia_nar_jobs_failed_total",
++            "stream-through NAR jobs that failed (resolver, daemon, or upstream)",
++        )?;
++        let nar_clients_attached_total = IntCounter::new(
++            "harmonia_nar_clients_attached_total",
++            "clients that attached to a live stream-through NAR job",
++        )?;
++        let nar_clients_dropped_total = IntCounter::new(
++            "harmonia_nar_clients_dropped_total",
++            "clients dropped from a stream-through NAR job due to a lagged broadcast",
++        )?;
++
+         registry.register(Box::new(http_requests_total.clone()))?;
+         registry.register(Box::new(http_requests_duration.clone()))?;
++        registry.register(Box::new(narinfo_misses_total.clone()))?;
++        registry.register(Box::new(nar_jobs_started_total.clone()))?;
++        registry.register(Box::new(nar_jobs_completed_total.clone()))?;
++        registry.register(Box::new(nar_jobs_failed_total.clone()))?;
++        registry.register(Box::new(nar_clients_attached_total.clone()))?;
++        registry.register(Box::new(nar_clients_dropped_total.clone()))?;
+ 
+         Ok(PrometheusMetrics {
+             registry,
+             http_requests_total,
+             http_requests_duration,
++            narinfo_misses_total,
++            nar_jobs_started_total,
++            nar_jobs_completed_total,
++            nar_jobs_failed_total,
++            nar_clients_attached_total,
++            nar_clients_dropped_total,
+         })
+     }
+ 
+diff --git a/harmonia-cache/src/upstream.rs b/harmonia-cache/src/upstream.rs
+new file mode 100644
+index 0000000..a5b524b
+--- /dev/null
++++ b/harmonia-cache/src/upstream.rs
+@@ -0,0 +1,53 @@
++//! Upstream binary-cache HTTP client (reqwest, rustls). One-shot narinfo GET
++//! and a streaming NAR body reader for the stream-through cache.
++
++use std::sync::LazyLock;
++
++use futures_util::StreamExt as _;
++use tokio_util::io::StreamReader;
++
++static CLIENT: LazyLock<reqwest::Client> =
++    LazyLock::new(|| reqwest::Client::builder().build().expect("reqwest client"));
++
++fn url(upstream: &str, path: &str) -> String {
++    format!("{}/{}", upstream.trim_end_matches('/'), path.trim_start_matches('/'))
++}
++
++/// Fetch an upstream narinfo. `Ok(Some(body))` on 200; `Ok(None)` on 404 (a
++/// clean upstream miss — the upstream simply doesn't have this path, which is
++/// normal and not an error); `Err` on any real failure (connection, TLS, 5xx,
++/// malformed body), so callers can log those loudly without flooding the log
++/// on every ordinary miss.
++pub(crate) async fn get_text(upstream: &str, path: &str) -> Result<Option<String>, String> {
++    let resp = CLIENT
++        .get(url(upstream, path))
++        .send()
++        .await
++        .map_err(|e| format!("upstream GET: {e}"))?;
++    if resp.status() == reqwest::StatusCode::NOT_FOUND {
++        return Ok(None);
++    }
++    resp.error_for_status()
++        .map_err(|e| format!("upstream status: {e}"))?
++        .text()
++        .await
++        .map(Some)
++        .map_err(|e| format!("upstream body: {e}"))
++}
++
++pub(crate) async fn get_stream(
++    upstream: &str,
++    path: &str,
++) -> Result<impl tokio::io::AsyncBufRead + Unpin + Send, String> {
++    let resp = CLIENT
++        .get(url(upstream, path))
++        .send()
++        .await
++        .map_err(|e| format!("upstream GET: {e}"))?
++        .error_for_status()
++        .map_err(|e| format!("upstream status: {e}"))?;
++    let stream = resp
++        .bytes_stream()
++        .map(|r| r.map_err(std::io::Error::other));
++    Ok(StreamReader::new(stream))
++}
+diff --git a/harmonia-cache/src/upstream_narinfo.rs b/harmonia-cache/src/upstream_narinfo.rs
+new file mode 100644
+index 0000000..68e5058
+--- /dev/null
++++ b/harmonia-cache/src/upstream_narinfo.rs
+@@ -0,0 +1,340 @@
++//! Parse an upstream (cache.nixos.org) narinfo and produce (a) the client-
++//! facing narinfo rewritten to point at harmonia's own NAR endpoint with
++//! Compression: none, and (b) a ValidPathInfo for add_to_store_nar. The
++//! rewrite only touches URL/Compression/FileHash/FileSize, which are NOT in
++//! the signature fingerprint (1;path;narhash;narsize;refs), so the upstream
++//! Sig lines stay valid.
++
++use std::collections::BTreeSet;
++
++use harmonia_protocol::nar_hash::NarHash;
++use harmonia_protocol::valid_path_info::{UnkeyedValidPathInfo, ValidPathInfo};
++use harmonia_store_core::signature::Signature;
++use harmonia_store_core::store_path::{ContentAddress, StoreDir, StorePath};
++use harmonia_utils_hash::Hash;
++use harmonia_utils_hash::fmt::{Any, CommonHash};
++
++pub(crate) struct UpstreamNarInfo {
++    pub store_path: String,      // "/nix/store/<hash>-<name>"
++    pub store_path_hash: String, // "<outhash>" (32 base32)
++    pub nar_hash_bare: String,   // NAR hash, bare base32 (no "sha256:")
++    pub nar_url: String,         // upstream "nar/<filehash>.nar.{xz,zst,...}"
++    pub upstream_compression: String, // how the upstream NAR is compressed
++    pub client_narinfo: String,  // rewritten text served to clients
++    pub info: ValidPathInfo,     // for add_to_store_nar
++}
++
++/// Infer the compression method from an upstream NAR URL's extension. Only used
++/// as a fallback when the narinfo omits the `Compression:` field (cache.nixos.org
++/// always sets it, but other substituters may not).
++fn infer_compression_from_url(url: &str) -> String {
++    if url.ends_with(".nar.zst") {
++        "zstd"
++    } else if url.ends_with(".nar.xz") {
++        "xz"
++    } else if url.ends_with(".nar.bz2") {
++        "bzip2"
++    } else if url.ends_with(".nar") {
++        "none"
++    } else {
++        // Unknown extension: assume xz, the historical cache.nixos.org default.
++        "xz"
++    }
++    .to_string()
++}
++
++pub(crate) fn parse_upstream_narinfo(
++    store_dir: &StoreDir,
++    text: &str,
++) -> Result<UpstreamNarInfo, String> {
++    let mut store_path = None;
++    let mut url = None;
++    let mut compression = None;
++    let mut nar_hash = None; // e.g. "sha256:<base32>" or "sha256-..." — keep as-is for parse
++    let mut nar_size = None;
++    let mut references: Vec<&str> = Vec::new();
++    let mut deriver = None;
++    let mut ca = None;
++    let mut sigs: Vec<&str> = Vec::new();
++
++    for line in text.lines() {
++        let Some((k, v)) = line.split_once(": ") else {
++            continue;
++        };
++        match k {
++            "StorePath" => store_path = Some(v.trim().to_string()),
++            "URL" => url = Some(v.trim().to_string()),
++            "Compression" => compression = Some(v.trim().to_string()),
++            "NarHash" => nar_hash = Some(v.trim().to_string()),
++            "NarSize" => nar_size = Some(v.trim().to_string()),
++            "References" => {
++                references = v.split_whitespace().collect();
++            }
++            "Deriver" => deriver = Some(v.trim().to_string()),
++            "CA" => ca = Some(v.trim().to_string()),
++            "Sig" => sigs.push(v.trim()),
++            _ => {}
++        }
++    }
++
++    let store_path = store_path.ok_or("upstream narinfo: no StorePath")?;
++    let url = url.ok_or("upstream narinfo: no URL")?;
++    let nar_hash_raw = nar_hash.ok_or("upstream narinfo: no NarHash")?;
++    let nar_size_str = nar_size.ok_or("upstream narinfo: no NarSize")?;
++    let nar_size: u64 = nar_size_str
++        .parse()
++        .map_err(|e| format!("bad NarSize: {e}"))?;
++
++    // Parse against the *configured* store dir — handles chroot stores, no
++    // hardcoded "/nix/store" — and take the canonical hash from the parsed
++    // path (`StorePath::hash()` has a base32 Display), so no fragile
++    // `split_once('-')` and no reliance on a dash being present.
++    let sp: StorePath = store_dir
++        .parse(&store_path)
++        .map_err(|e| format!("parse StorePath: {e}"))?;
++    let store_path_hash = sp.hash().to_string();
++
++    // NarHash may be "sha256:<base32>" or "sha256-<base64 SRI>"; harmonia's
++    // client nar route expects bare base32. Normalize to bare base32 for the
++    // rewritten URL. Reuse harmonia's Hash parser (Any<Hash>) to be exact.
++    let nar_hash_bare = normalize_nar_hash_bare(&nar_hash_raw)?;
++
++    // How the upstream NAR is compressed, so the job decodes it correctly.
++    // cache.nixos.org serves zstd today, xz historically; honor the field and
++    // fall back to the URL extension only if it is absent or empty.
++    let upstream_compression = match compression.as_deref().map(str::trim) {
++        Some(c) if !c.is_empty() => c.to_string(),
++        _ => infer_compression_from_url(&url),
++    };
++    let info = build_valid_path_info(
++        store_dir,
++        sp,
++        &nar_hash_raw,
++        nar_size,
++        &references,
++        deriver.as_deref(),
++        ca.as_deref(),
++        &sigs,
++    )?;
++
++    // Rewritten client narinfo: URL -> harmonia nix-serve nar route, no
++    // compression, FileHash/FileSize = NarHash/NarSize. Keep Sig lines.
++    let mut out = String::new();
++    out.push_str(&format!("StorePath: {store_path}\n"));
++    out.push_str(&format!(
++        "URL: nar/{store_path_hash}-{nar_hash_bare}.nar\n"
++    ));
++    out.push_str("Compression: none\n");
++    out.push_str(&format!("FileHash: {nar_hash_raw}\n"));
++    out.push_str(&format!("FileSize: {nar_size}\n"));
++    out.push_str(&format!("NarHash: {nar_hash_raw}\n"));
++    out.push_str(&format!("NarSize: {nar_size}\n"));
++    if !references.is_empty() {
++        out.push_str(&format!("References: {}\n", references.join(" ")));
++    }
++    if let Some(d) = &deriver {
++        out.push_str(&format!("Deriver: {d}\n"));
++    }
++    if let Some(c) = &ca {
++        out.push_str(&format!("CA: {c}\n"));
++    }
++    for s in &sigs {
++        out.push_str(&format!("Sig: {s}\n"));
++    }
++
++    Ok(UpstreamNarInfo {
++        store_path,
++        store_path_hash,
++        nar_hash_bare,
++        nar_url: url,
++        upstream_compression,
++        client_narinfo: out,
++        info,
++    })
++}
++
++/// Normalize a NarHash string (either "sha256:<base32>" or SRI "sha256-<base64>")
++/// to bare base32 (no prefix), as used in harmonia's NAR URL route.
++fn normalize_nar_hash_bare(raw: &str) -> Result<String, String> {
++    let h: Hash = raw
++        .parse::<Any<Hash>>()
++        .map_err(|e| e.to_string())?
++        .into_hash();
++    Ok(h.as_base32().as_bare().to_string())
++}
++
++/// Build a ValidPathInfo from parsed upstream narinfo fields.
++#[allow(clippy::too_many_arguments)]
++fn build_valid_path_info(
++    store_dir: &StoreDir,
++    sp: StorePath,
++    nar_hash_raw: &str,
++    nar_size: u64,
++    references: &[&str],
++    deriver: Option<&str>,
++    ca: Option<&str>,
++    sigs: &[&str],
++) -> Result<ValidPathInfo, String> {
++    // Parse NarHash (sha256:<base32> or SRI) into the protocol NarHash type.
++    let h: Hash = nar_hash_raw
++        .parse::<Any<Hash>>()
++        .map_err(|e| e.to_string())?
++        .into_hash();
++    let nar_hash = NarHash::try_from(h).map_err(|e| format!("NarHash type error: {e}"))?;
++
++    // Parse references: upstream narinfo encodes them as basename-only paths
++    // (e.g. "hash-name"), so we use StorePath::from_base_path directly.
++    let mut refs: BTreeSet<StorePath> = BTreeSet::new();
++    for r in references {
++        let rsp = StorePath::from_base_path(r)
++            .map_err(|e| format!("invalid reference '{r}': {e}"))?;
++        refs.insert(rsp);
++    }
++
++    // Parse optional deriver (also basename-only in upstream narinfo).
++    let deriver_sp: Option<StorePath> = deriver
++        .map(|d| {
++            StorePath::from_base_path(d).map_err(|e| format!("invalid deriver '{d}': {e}"))
++        })
++        .transpose()?;
++
++    // Parse optional content address.
++    let content_address: Option<ContentAddress> = ca
++        .map(|c| {
++            c.parse::<ContentAddress>()
++                .map_err(|e| format!("invalid CA '{c}': {e}"))
++        })
++        .transpose()?;
++
++    // Parse signatures.
++    let mut signatures: BTreeSet<Signature> = BTreeSet::new();
++    for s in sigs {
++        let sig: Signature = s
++            .parse::<Signature>()
++            .map_err(|e| format!("invalid Sig '{s}': {e}"))?;
++        signatures.insert(sig);
++    }
++
++    Ok(ValidPathInfo {
++        path: sp,
++        info: UnkeyedValidPathInfo {
++            deriver: deriver_sp,
++            nar_hash,
++            references: refs,
++            registration_time: None,
++            nar_size,
++            ultimate: false,
++            signatures,
++            ca: content_address,
++            store_dir: store_dir.clone(),
++        },
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // A minimal valid store_dir for /nix/store.
++    fn sd() -> StoreDir {
++        StoreDir::default()
++    }
++
++    // Real-looking, correctly-sized hash values.
++    // Store path hash: 32 nix base32 chars (from the harmonia store_dir doctest).
++    // NarHash (sha256 base32): 52 nix base32 chars (sha256 of "abc" from fmt.rs tests).
++    // Signature: "cache.nixos.org-1:" + 88-char base64 of 64 zero bytes.
++    const STORE_HASH: &str = "55xkmqns51sw7nrgykp5vnz36w4fr3cw";
++    const NAR_HASH_B32: &str = "1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
++    const SIG_B64: &str =
++        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
++
++    fn sample() -> String {
++        format!(
++            "StorePath: /nix/store/{STORE_HASH}-nix-2.1.3\n\
++             URL: nar/1abc.nar.xz\n\
++             Compression: xz\n\
++             FileHash: sha256:{NAR_HASH_B32}\n\
++             FileSize: 10\n\
++             NarHash: sha256:{NAR_HASH_B32}\n\
++             NarSize: 20\n\
++             References: {STORE_HASH}-nix-2.1.3\n\
++             Sig: cache.nixos.org-1:{SIG_B64}\n"
++        )
++    }
++
++    #[test]
++    fn rewrite_points_at_harmonia_and_keeps_sig() {
++        let text = sample();
++        let up = parse_upstream_narinfo(&sd(), &text).unwrap();
++
++        // URL must be rewritten to harmonia's nar route
++        let expected_url = format!("URL: nar/{STORE_HASH}-{NAR_HASH_B32}.nar");
++        assert!(
++            up.client_narinfo.contains(&expected_url),
++            "client_narinfo missing expected URL; got:\n{}",
++            up.client_narinfo
++        );
++
++        // Compression must be none
++        assert!(
++            up.client_narinfo.contains("Compression: none"),
++            "client_narinfo missing 'Compression: none'; got:\n{}",
++            up.client_narinfo
++        );
++
++        // Sig line must be preserved verbatim
++        let expected_sig = format!("Sig: cache.nixos.org-1:{SIG_B64}");
++        assert!(
++            up.client_narinfo.contains(&expected_sig),
++            "client_narinfo missing expected Sig; got:\n{}",
++            up.client_narinfo
++        );
++
++        // NarSize fingerprint field must be unchanged
++        assert!(
++            up.client_narinfo.contains("NarSize: 20"),
++            "client_narinfo missing 'NarSize: 20'; got:\n{}",
++            up.client_narinfo
++        );
++
++        // nar_url must be the original upstream URL (not rewritten)
++        assert_eq!(up.nar_url, "nar/1abc.nar.xz");
++
++        // upstream compression must be captured from the Compression: field
++        assert_eq!(up.upstream_compression, "xz");
++
++        // store_path_hash must equal the hash from the parsed StorePath
++        assert_eq!(up.store_path_hash, STORE_HASH);
++
++        // nar_hash_bare must be bare base32 (no "sha256:" prefix)
++        assert_eq!(up.nar_hash_bare, NAR_HASH_B32);
++
++        // ValidPathInfo must have correct nar_size
++        assert_eq!(up.info.info.nar_size, 20);
++    }
++
++    #[test]
++    fn captures_zstd_compression() {
++        // cache.nixos.org serves zstd today: the field must be honored so the
++        // NAR job picks the zstd decoder rather than the hard-coded xz one.
++        let text = sample()
++            .replace("URL: nar/1abc.nar.xz", "URL: nar/1abc.nar.zst")
++            .replace("Compression: xz", "Compression: zstd");
++        let up = parse_upstream_narinfo(&sd(), &text).unwrap();
++        assert_eq!(up.upstream_compression, "zstd");
++        assert_eq!(up.nar_url, "nar/1abc.nar.zst");
++        // Client still gets Compression: none (harmonia serves the raw NAR).
++        assert!(up.client_narinfo.contains("Compression: none"));
++    }
++
++    #[test]
++    fn infers_compression_from_url_when_field_absent() {
++        // A narinfo without a Compression: line falls back to the URL extension.
++        let text = sample()
++            .replace("URL: nar/1abc.nar.xz", "URL: nar/1abc.nar.zst")
++            .replace("Compression: xz\n", "");
++        let up = parse_upstream_narinfo(&sd(), &text).unwrap();
++        assert_eq!(up.upstream_compression, "zstd");
++    }
++}
+diff --git a/harmonia-cache/tests/streamthrough.rs b/harmonia-cache/tests/streamthrough.rs
+new file mode 100644
+index 0000000..6961ba1
+--- /dev/null
++++ b/harmonia-cache/tests/streamthrough.rs
+@@ -0,0 +1,103 @@
++// Streaming NAR job — integration coverage.
++//
++// NOTE ON TEST LOCATION
++// ---------------------
++// The load-bearing streaming-job tests (coalescing under N concurrent
++// requests, store-import convergence, lead-client disconnect, and truncated
++// upstream rejection) live *inside the crate* in `src/nar_job.rs` under
++// `#[cfg(test)] mod tests`, and run with `cargo test --bins`. They must live
++// there because they drive `JobRegistry::attach` directly, and `attach` /
++// `Attach` / `BroadcastBody` are `pub(crate)` — an out-of-crate integration
++// test in this file cannot name them. Until the nar HTTP route that calls
++// `attach` is wired up (a later task), there is no public surface to drive the
++// job end-to-end over HTTP from here.
++//
++// This file exercises the *test harness contract* the in-crate tests depend on:
++// a minimal HTTP/1.1 fake upstream serving an xz body, decoded via the same
++// `async_compression` xz decoder the job uses. If this round-trip ever breaks
++// (e.g. an async-compression bump changes behaviour), this test fails loudly
++// and independently of the daemon-backed in-crate tests.
++
++use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++use tokio::net::TcpListener;
++
++/// Spawn a minimal HTTP/1.1 server that serves `xz` at `/blob.xz`, counting GETs.
++async fn spawn_upstream(xz: Vec<u8>) -> (String, Arc<AtomicUsize>) {
++    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let addr = listener.local_addr().unwrap();
++    let counter = Arc::new(AtomicUsize::new(0));
++    let counter_task = counter.clone();
++
++    tokio::spawn(async move {
++        loop {
++            let (mut sock, _) = match listener.accept().await {
++                Ok(s) => s,
++                Err(_) => break,
++            };
++            let xz = xz.clone();
++            let counter = counter_task.clone();
++            tokio::spawn(async move {
++                let mut buf = vec![0u8; 4096];
++                let n = match sock.read(&mut buf).await {
++                    Ok(0) | Err(_) => return,
++                    Ok(n) => n,
++                };
++                let _ = String::from_utf8_lossy(&buf[..n]);
++                counter.fetch_add(1, Ordering::SeqCst);
++                let head = format!(
++                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++                    xz.len()
++                );
++                let _ = sock.write_all(head.as_bytes()).await;
++                let _ = sock.write_all(&xz).await;
++                let _ = sock.flush().await;
++            });
++        }
++    });
++
++    (format!("http://{addr}"), counter)
++}
++
++/// xz-compress `data` with the `xz` CLI (present in the dev shell).
++fn xz_compress(data: &[u8]) -> Vec<u8> {
++    use std::io::Write;
++    use std::process::{Command, Stdio};
++    let mut child = Command::new("xz")
++        .args(["-c", "-9"])
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .spawn()
++        .expect("spawn xz");
++    child.stdin.take().unwrap().write_all(data).unwrap();
++    let out = child.wait_with_output().unwrap();
++    assert!(out.status.success(), "xz failed");
++    out.stdout
++}
++
++#[tokio::test]
++async fn fake_upstream_xz_roundtrip() {
++    let plain = b"the quick brown fox jumps over the lazy dog\n".repeat(1000);
++    let xz = xz_compress(&plain);
++    assert!(xz.len() < plain.len(), "xz should compress this payload");
++
++    let (url, counter) = spawn_upstream(xz).await;
++
++    // Fetch over HTTP with reqwest (the same client family the job uses) and
++    // decode via the same async-compression xz decoder the job uses.
++    let resp = reqwest::get(format!("{url}/blob.xz")).await.unwrap();
++    let body = resp.bytes().await.unwrap();
++    assert_eq!(counter.load(Ordering::SeqCst), 1, "exactly one GET");
++
++    let mut dec = async_compression::tokio::bufread::XzDecoder::new(
++        tokio::io::BufReader::new(std::io::Cursor::new(body.to_vec())),
++    );
++    let mut decoded = Vec::new();
++    tokio::io::AsyncReadExt::read_to_end(&mut dec, &mut decoded)
++        .await
++        .unwrap();
++
++    assert_eq!(decoded, plain, "xz round-trip through fake upstream");
++}

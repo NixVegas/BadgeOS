@@ -1,0 +1,14 @@
+&usb {
+	dr_mode = "host";
+	status = "okay";
+};
+
+&usb_vbus {
+	regulator-boot-on;
+	regulator-always-on;
+};
+
+/* Badge mode has no DSI host, so the base DTS disables the bridge. */
+&lt8912b {
+	status = "okay";
+};

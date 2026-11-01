@@ -1,0 +1,7 @@
+&gmac0 {
+	status = "disabled";
+};
+
+&mdio {
+	status = "disabled";
+};

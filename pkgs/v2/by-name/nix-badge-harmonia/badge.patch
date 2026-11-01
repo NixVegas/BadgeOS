@@ -1,0 +1,2411 @@
+diff --git a/harmonia-cache/src/config.rs b/harmonia-cache/src/config.rs
+index fc2191a..0cf53e4 100644
+--- a/harmonia-cache/src/config.rs
++++ b/harmonia-cache/src/config.rs
+@@ -35,8 +35,8 @@ fn default_miss_daemon_socket() -> PathBuf {
+     PathBuf::from("/nix/var/nix/daemon-socket/socket")
+ }
+ 
+-fn default_miss_upstream_url() -> String {
+-    "https://cache.nixos.org".into()
++fn default_miss_upstream_urls() -> Vec<String> {
++    vec!["https://cache.nixos.org".into()]
+ }
+ 
+ fn default_miss_narinfo_cache_size() -> usize {
+@@ -47,6 +47,34 @@ fn default_miss_narinfo_cache_ttl() -> u64 {
+     600
+ }
+ 
++fn default_miss_connect_timeout_secs() -> u64 {
++    10
++}
++
++fn default_miss_read_timeout_secs() -> u64 {
++    30
++}
++
++fn default_miss_spool_dir() -> PathBuf {
++    PathBuf::from("/var/cache/harmonia")
++}
++
++fn default_miss_reference_wait_secs() -> u64 {
++    300
++}
++
++fn default_miss_max_jobs() -> usize {
++    8
++}
++
++fn default_miss_slot_wait_secs() -> u64 {
++    5
++}
++
++fn default_miss_upstream_retry_secs() -> u64 {
++    60
++}
++
+ /// zstd parameters applied to on-the-fly NAR encoding when the client sends
+ /// `Accept-Encoding: zstd`. Defaults are tuned for a substitution cache:
+ /// level 1 with long-distance matching beats the libzstd default (level 3)
+@@ -133,17 +161,16 @@ pub(crate) struct Config {
+     #[serde(default = "default_enable_compression")]
+     pub(crate) enable_compression: bool,
+ 
+-    /// On a narinfo/nar miss, 301-redirect the client to `miss_upstream_url`
+-    /// (so it never blocks on us) and, in the background, substitute the path
+-    /// into the local store via the nix daemon so the next request is served
+-    /// locally. Off by default (stock behaviour: 404 on miss).
++    /// On a narinfo miss, serve the narinfo of the first of `miss_upstream_urls`
++    /// that has it, and stream its NAR to the client and into the local store via
++    /// the nix daemon, so the next request is served locally. Off by default
++    /// (stock behaviour: 404 on miss).
+     #[serde(default)]
+     pub(crate) substitute_on_miss: bool,
+-    /// Upstream binary cache used for both the miss redirect target and the
+-    /// background warm's narinfo fetch (over HTTPS). Required when
+-    /// `substitute_on_miss` is set.
+-    #[serde(default = "default_miss_upstream_url")]
+-    pub(crate) miss_upstream_url: String,
++    /// Upstream binary caches, tried in order on a miss: the first that has the
++    /// narinfo serves it, and the NAR comes from that one.
++    #[serde(default = "default_miss_upstream_urls")]
++    pub(crate) miss_upstream_urls: Vec<String>,
+     /// The real nix-daemon socket (harmonia-daemon does not substitute).
+     #[serde(default = "default_miss_daemon_socket")]
+     pub(crate) miss_daemon_socket: PathBuf,
+@@ -156,6 +183,35 @@ pub(crate) struct Config {
+     /// is never requested.
+     #[serde(default = "default_miss_narinfo_cache_ttl")]
+     pub(crate) miss_narinfo_cache_ttl: u64,
++    /// Seconds to connect to an upstream, and to wait on any one read from it, so a
++    /// stalled upstream fails the request instead of holding it.
++    #[serde(default = "default_miss_connect_timeout_secs")]
++    pub(crate) miss_connect_timeout_secs: u64,
++    #[serde(default = "default_miss_read_timeout_secs")]
++    pub(crate) miss_read_timeout_secs: u64,
++    /// Seconds an upstream that timed out connecting or answering is skipped.
++    #[serde(default = "default_miss_upstream_retry_secs")]
++    pub(crate) miss_upstream_retry_secs: u64,
++    /// Where a pulled NAR is spooled until it is imported.
++    #[serde(default = "default_miss_spool_dir")]
++    pub(crate) miss_spool_dir: PathBuf,
++    /// A NAR is spooled, and so cached, only while its filesystem keeps this many bytes
++    /// free besides it; below that it is only streamed.
++    #[serde(default)]
++    pub(crate) miss_min_free_bytes: u64,
++    /// Seconds an import waits for in-flight jobs of the path's references, and
++    /// then for no NAR to be streaming before the daemon fetches the rest.
++    #[serde(default = "default_miss_reference_wait_secs")]
++    pub(crate) miss_reference_wait_secs: u64,
++    /// At most this many NARs stream from upstream at once; more wait for a slot, up to
++    /// `miss_slot_wait_secs`.
++    #[serde(default = "default_miss_max_jobs")]
++    pub(crate) miss_max_jobs: usize,
++    /// Seconds a new job waits for a slot, and a request that came after a path's last
++    /// chunk waits for its import; past that the client gets a 404, so it moves on to
++    /// its next substituter.
++    #[serde(default = "default_miss_slot_wait_secs")]
++    pub(crate) miss_slot_wait_secs: u64,
+ 
+     #[serde(default)]
+     pub(crate) zstd: ZstdConfig,
+@@ -177,9 +233,43 @@ pub(crate) struct Config {
+     pub(crate) secret_keys: Vec<SecretKey>,
+     #[serde(skip)]
+     pub(crate) store: Store,
++    #[serde(skip)]
++    upstream_client: std::sync::OnceLock<reqwest::Client>,
++    /// Upstreams that are down, and until when.
++    #[serde(skip)]
++    upstreams_down: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+ }
+ 
+ impl Config {
++    /// The HTTP client for upstream caches, built on first use with the miss
++    /// timeouts.
++    pub(crate) fn upstream_client(&self) -> &reqwest::Client {
++        self.upstream_client.get_or_init(|| {
++            reqwest::Client::builder()
++                .connect_timeout(std::time::Duration::from_secs(self.miss_connect_timeout_secs))
++                .read_timeout(std::time::Duration::from_secs(self.miss_read_timeout_secs))
++                .build()
++                .expect("reqwest client")
++        })
++    }
++
++    /// Whether `upstream` timed out connecting or answering within the last
++    /// `miss_upstream_retry_secs`.
++    pub(crate) fn upstream_down(&self, upstream: &str) -> bool {
++        let down = self.upstreams_down.lock().unwrap();
++        down.get(upstream)
++            .is_some_and(|until| std::time::Instant::now() < *until)
++    }
++
++    pub(crate) fn mark_upstream_down(&self, upstream: &str) {
++        let until = std::time::Instant::now()
++            + std::time::Duration::from_secs(self.miss_upstream_retry_secs);
++        self.upstreams_down
++            .lock()
++            .unwrap()
++            .insert(upstream.to_string(), until);
++    }
++
+     pub(crate) fn load(settings_file: &Path) -> Result<Config> {
+         let contents = read_to_string(settings_file).map_err(|e| ConfigError::ReadFile {
+             path: settings_file.display().to_string(),
+@@ -299,22 +389,30 @@ mod tests {
+     fn test_substitute_on_miss_defaults() {
+         let c: Config = toml::from_str("").unwrap();
+         assert!(!c.substitute_on_miss);
+-        assert_eq!(c.miss_upstream_url, "https://cache.nixos.org");
++        assert_eq!(c.miss_upstream_urls, vec!["https://cache.nixos.org".to_string()]);
+         assert_eq!(
+             c.miss_daemon_socket,
+             PathBuf::from("/nix/var/nix/daemon-socket/socket")
+         );
+         assert_eq!(c.miss_narinfo_cache_size, 1024);
+         assert_eq!(c.miss_narinfo_cache_ttl, 600);
++        assert_eq!(c.miss_spool_dir, PathBuf::from("/var/cache/harmonia"));
++        assert_eq!(c.miss_min_free_bytes, 0);
++        assert_eq!(c.miss_reference_wait_secs, 300);
++        assert_eq!(c.miss_max_jobs, 8);
++        assert_eq!(c.miss_slot_wait_secs, 5);
++        assert_eq!(c.miss_connect_timeout_secs, 10);
++        assert_eq!(c.miss_read_timeout_secs, 30);
++        assert_eq!(c.miss_upstream_retry_secs, 60);
+     }
+ 
+     #[test]
+     fn test_substitute_on_miss_parses() {
+         let c: Config = toml::from_str(
+-            "substitute_on_miss = true\nmiss_upstream_url = \"https://example.invalid\"\n",
++            "substitute_on_miss = true\nmiss_upstream_urls = [\"https://a.invalid\", \"https://b.invalid\"]\n",
+         )
+         .unwrap();
+         assert!(c.substitute_on_miss);
+-        assert_eq!(c.miss_upstream_url, "https://example.invalid");
++        assert_eq!(c.miss_upstream_urls, vec!["https://a.invalid".to_string(), "https://b.invalid".to_string()]);
+     }
+ }
+diff --git a/harmonia-cache/src/main.rs b/harmonia-cache/src/main.rs
+index 2ad9d61..a3755bd 100644
+--- a/harmonia-cache/src/main.rs
++++ b/harmonia-cache/src/main.rs
+@@ -182,7 +182,10 @@ async fn inner_main() -> Result<()> {
+         Duration::from_secs(config.miss_narinfo_cache_ttl),
+     ));
+     let job_registry =
+-        std::sync::Arc::new(nar_job::JobRegistry::new(narinfo_cache.clone()));
++        std::sync::Arc::new(nar_job::JobRegistry::new(narinfo_cache.clone(), config.miss_max_jobs));
++    if config.substitute_on_miss {
++        nar_job::clear_spool(&config.miss_spool_dir);
++    }
+ 
+     let c = web::Data::new(config);
+     let config_data = c.clone();
+diff --git a/harmonia-cache/src/nar.rs b/harmonia-cache/src/nar.rs
+index 4a35899..96b7cd2 100644
+--- a/harmonia-cache/src/nar.rs
++++ b/harmonia-cache/src/nar.rs
+@@ -150,18 +150,27 @@ pub(crate) async fn get(
+                                 .body(actix_web::body::SizedStream::new(body.nar_size(), body)));
+                         }
+                         Attach::Parked(mut done) => {
+-                            // Mid-stream arrival: wait for the job to finish, then
+-                            // serve from the store if it cached; otherwise loop to
+-                            // re-fetch fresh.
+-                            let _ = done
+-                                .wait_for(|s| !matches!(s, JobState::Running))
+-                                .await;
++                            // Mid-stream arrival: wait, up to miss_slot_wait_secs,
++                            // for the job to finish, then serve from the store if it
++                            // cached. A job that failed (or never got a slot) or is
++                            // still importing is a miss; one that served without
++                            // caching is re-fetched fresh.
++                            let wait = std::time::Duration::from_secs(settings.miss_slot_wait_secs);
++                            let state = tokio::time::timeout(
++                                wait,
++                                done.wait_for(|s| !matches!(s, JobState::Running)),
++                            )
++                            .await
++                            .map(|r| r.map_or(JobState::Failed, |s| *s));
+                             if let Some(info) = settings
+                                 .store
+                                 .query_path_info_by_hash_part(&store_path_hash.to_string())?
+                             {
+                                 return Ok(serve_full_nar_from_store(&settings, &info, outhash)?);
+                             }
++                            if !matches!(state, Ok(JobState::Ok)) {
++                                break;
++                            }
+                             // Not cached this round; retry.
+                         }
+                     }
+diff --git a/harmonia-cache/src/nar_job.rs b/harmonia-cache/src/nar_job.rs
+index c43471b..7fe3eab 100644
+--- a/harmonia-cache/src/nar_job.rs
++++ b/harmonia-cache/src/nar_job.rs
+@@ -3,17 +3,28 @@
+ //! A `Job` fetches exactly one upstream `<filehash>.nar.<compression>`, decodes
+ //! it per the upstream narinfo's `Compression` (zstd/xz/bzip2/none), and
+ //! fans the decoded NAR bytes to (a) live client streams via a `broadcast` and
+-//! (b) the local nix store via `add_to_store_nar` on the miss daemon socket.
++//! (b) a spool file, which is imported into the local nix store via
++//! `add_to_store_nar` on the miss daemon socket once the NAR is whole.
+ //!
+ //! Concurrency contract (the load-bearing invariants):
+-//!   * The store import is the durable priority. It runs to completion even if
+-//!     every client disconnects; convergence never depends on a client staying
+-//!     attached.
+-//!   * The store sink and the broadcast fan-out run *concurrently*: decoded
+-//!     chunks are written into a `tokio::io::duplex` whose read half is drained
+-//!     by `add_to_store_nar` on a spawned task. If we wrote to the duplex
+-//!     without a concurrent drain, the 64 KiB buffer would fill and the fan-out
+-//!     would deadlock.
++//!   * Clients never wait on the store. Each decoded chunk is broadcast, then
++//!     written to the spool; the import reads the spool at the store's pace after
++//!     the last chunk. A live client's body ends once it has the NAR's `NarSize`
++//!     bytes, not when the job does.
++//!   * The fetch is paced to the slowest live client: while one is close to the
++//!     end of the broadcast the producer waits (up to the read timeout), so a fast
++//!     upstream never drops a client. At most `miss_max_jobs` NARs stream at once;
++//!     a job that gets no slot within `miss_slot_wait_secs` fails before it
++//!     streams, so its clients get a 404 rather than a wait.
++//!   * The import runs to completion even if every client disconnects. Before it
++//!     the path's references are made valid: in-flight jobs for them are awaited,
++//!     and the daemon substitutes the rest itself. Imports go one at a time over
++//!     one daemon connection, and references are fetched only while no NAR is
++//!     streaming. With less than `miss_min_free_bytes` free for the spool, a NAR
++//!     is streamed, not cached.
++//!   * Once the last chunk is out, a new request for the path parks, for up to
++//!     `miss_slot_wait_secs`, until the import ends and is served from the store:
++//!     it would have missed the head. Past that wait it is a miss.
+ //!   * Coalescing: the registry keys `Weak<Job>` by store-path hash. A second
+ //!     concurrent request for the same path upgrades the existing `Weak` and
+ //!     subscribes to the same broadcast — it never starts a second fetch.
+@@ -21,10 +32,9 @@
+ //!     synchronously in `Job::spawn` (which returns after the narinfo fetch but
+ //!     before any chunk). The whole same-hash cohort — the creator and every
+ //!     coalescer awaiting the shared creation — resolves that creation and
+-//!     subscribes while the fan-out task is still doing its daemon connect and
+-//!     the upstream `.nar.xz` GET (a network round trip), i.e. before the first
+-//!     decoded chunk is broadcast. They therefore join the start-of-job cohort
+-//!     and never miss the head.
++//!     subscribes while the fan-out task is still doing the upstream NAR GET (a
++//!     network round trip), i.e. before the first decoded chunk is broadcast.
++//!     They therefore join the start-of-job cohort and never miss the head.
+ //!   * Single-fetch (single-flight): the registry never holds a lock across the
+ //!     upstream fetch. Instead each hash has a *creation-in-progress* entry — a
+ //!     `Shared` future the first arrival installs and every same-hash arrival
+@@ -36,17 +46,20 @@
+ use std::collections::HashMap;
+ use std::future::Future;
+ use std::pin::Pin;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ use std::sync::{Arc, Weak};
+ use std::task::{Context, Poll};
+ 
+ use actix_web::web;
+ use bytes::{Bytes, BytesMut};
+ use harmonia_protocol::types::DaemonStore as _;
++use harmonia_store_core::store_path::StorePathSet;
+ use futures_core::Stream;
+ use futures_util::FutureExt as _;
+ use futures_util::future::Shared;
+ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+-use tokio::sync::{broadcast, watch};
++use tokio::sync::{broadcast, mpsc, oneshot, watch};
+ 
+ use crate::config::Config;
+ use crate::narinfo_cache::NarInfoCache;
+@@ -54,13 +67,15 @@ use crate::prometheus::PrometheusMetrics;
+ use crate::upstream;
+ use crate::upstream_narinfo::{UpstreamNarInfo, parse_upstream_narinfo};
+ 
+-/// Broadcast channel capacity (chunks). A slow client that lags past this many
+-/// buffered chunks gets `Lagged` and is dropped — it never gates the job.
+-const BROADCAST_CAP: usize = 256;
++/// Broadcast channel capacity (chunks, so at most 4 MiB per job). The producer
++/// waits while a client is `PACE_AT` chunks behind; one that stays behind past
++/// the read timeout gets `Lagged` and is dropped.
++const BROADCAST_CAP: usize = 64;
++const PACE_AT: usize = 48;
+ 
+ /// Read-buffer target for each decoded-chunk read. Chunks are split off a
+-/// reusable `BytesMut` so both the store sink and every broadcast subscriber
+-/// share a single ref-counted allocation.
++/// reusable `BytesMut` so the spool and every broadcast subscriber share a
++/// single ref-counted allocation.
+ const CHUNK_TARGET: usize = 64 * 1024;
+ 
+ /// Terminal state of a job, observed by parked (mid-stream) waiters.
+@@ -91,22 +106,30 @@ pub(crate) struct Job {
+     /// Decompressed NAR size, from the upstream narinfo. Used with actix
+     /// `SizedStream` so live clients get a correct `Content-Length`.
+     nar_size: u64,
++    /// Set once the last chunk is broadcast: later arrivals park.
++    produced: AtomicBool,
+ }
+ 
+ impl Job {
++    /// Still sending chunks: a new client can join the stream.
++    fn streaming(&self) -> bool {
++        *self.done.borrow() == JobState::Running && !self.produced.load(Ordering::Acquire)
++    }
++
+     /// Spawn a new job: fetch/resolve the upstream narinfo (needed for
+     /// `nar_size` and the compressed `nar_url`), create the broadcast + done
+     /// channels, then spawn the fan-out task. Returns the `Arc<Job>`.
+     ///
+     /// Clients (the creator and any same-hash coalescers) subscribe *after* this
+-    /// returns but *before the first chunk is broadcast*: `run_fanout` does a
+-    /// daemon connect and the upstream `.nar.xz` GET (a network round trip)
+-    /// before the first decoded chunk reaches the broadcast, so the whole
++    /// returns but *before the first chunk is broadcast*: `run_fanout` does the
++    /// upstream `.nar.xz` GET (a network round trip) before the first decoded
++    /// chunk reaches the broadcast, so the whole
+     /// same-hash cohort has resolved the shared creation and subscribed within
+     /// that window — they join the start-of-job cohort and never miss the head.
+     ///
+-    /// Returns `Err` only if the upstream narinfo cannot be resolved (so the
+-    /// caller can 404); once a Job exists, its fan-out runs to completion.
++    /// Returns `Err` if the upstream narinfo cannot be resolved or no job slot
++    /// frees up within `miss_slot_wait_secs` (so the caller can 404); once a Job
++    /// exists, its fan-out runs to completion.
+     async fn spawn(
+         cfg: web::Data<Config>,
+         metrics: web::Data<Arc<PrometheusMetrics>>,
+@@ -117,6 +140,15 @@ impl Job {
+         // front for `nar_size` and to know the compressed `nar_url`.
+         let up = get_or_fetch_upstream(&cfg, &registry.cache, &hash).await?;
+         let nar_size = up.info.info.nar_size;
++        // No slot in time: fail now, while the client can still get a 404, rather
++        // than leave it waiting until its proxy gives up.
++        let slot = tokio::time::timeout(
++            std::time::Duration::from_secs(cfg.miss_slot_wait_secs),
++            registry.slots.clone().acquire_owned(),
++        )
++        .await
++        .map_err(|_| format!("no job slot free in {} s", cfg.miss_slot_wait_secs))?
++        .map_err(|e| format!("job slot: {e}"))?;
+ 
+         let (tx, _rx0) = broadcast::channel::<Bytes>(BROADCAST_CAP);
+         let (done_tx, done_rx) = watch::channel(JobState::Running);
+@@ -126,16 +158,17 @@ impl Job {
+             tx: tx.clone(),
+             done: done_rx,
+             nar_size,
++            produced: AtomicBool::new(false),
+         });
+ 
+         // The fan-out task owns the `Arc<Job>` for the whole run. This is what
+         // keeps the registry's `Weak` upgradeable (so concurrent requests
+-        // coalesce) AND it is the last thing holding a broadcast `Sender`:
+-        // clients therefore see a clean `Closed` EOF exactly when the job ends,
+-        // independent of whether any client stays attached. The producing
+-        // sender lives in `tx`; when the task returns it drops both `tx` and the
+-        // `Arc<Job>` (which holds the other sender), closing the channel.
+-        tokio::spawn(fanout(cfg, metrics, registry, hash, job.clone(), up, tx, done_tx));
++        // coalesce) AND it is the last thing holding a broadcast `Sender`: a
++        // client still attached when the job ends sees `Closed`, which is an
++        // error unless it already has the whole NAR. The producing sender lives
++        // in `tx`; when the task returns it drops both `tx` and the `Arc<Job>`
++        // (which holds the other sender), closing the channel.
++        tokio::spawn(fanout(cfg, metrics, registry, hash, job.clone(), up, tx, done_tx, slot));
+ 
+         Ok(job)
+     }
+@@ -154,10 +187,11 @@ async fn get_or_fetch_upstream(
+     // A 404 here means the narinfo vanished upstream between the client's
+     // narinfo request (which populated the LRU) and this fetch — treat the
+     // clean miss as an error so the job fails rather than parsing an empty body.
+-    let text = upstream::get_text(&cfg.miss_upstream_url, &format!("/{hash}.narinfo"))
+-        .await?
+-        .ok_or_else(|| "upstream narinfo 404 (vanished mid-flight)".to_string())?;
+-    let up = parse_upstream_narinfo(cfg.store.store_dir(), &text)?;
++    let (base, text) = upstream::first_narinfo(cfg, hash)
++        .await
++        .ok_or_else(|| "no upstream has the narinfo (vanished mid-flight)".to_string())?;
++    let mut up = parse_upstream_narinfo(cfg.store.store_dir(), &text)?;
++    up.upstream = base;
+     // Use the hash extracted from the upstream narinfo (authoritative), keying on
+     // `store_path_hash` so a normalised base32 form is always used.
+     let key = up.store_path_hash.clone();
+@@ -166,8 +200,8 @@ async fn get_or_fetch_upstream(
+     Ok(up)
+ }
+ 
+-/// The heart: fetch the compressed NAR, xz-decode it, and concurrently feed the
+-/// store sink (gated, durable) and the broadcast (non-blocking, best-effort).
++/// The heart: fetch and decode the NAR for the clients and the spool, import the
++/// spool, then publish the outcome and free the job's slots.
+ #[allow(clippy::too_many_arguments)]
+ async fn fanout(
+     cfg: web::Data<Config>,
+@@ -178,10 +212,11 @@ async fn fanout(
+     up: Arc<UpstreamNarInfo>,
+     tx: broadcast::Sender<Bytes>,
+     done_tx: watch::Sender<JobState>,
++    slot: tokio::sync::OwnedSemaphorePermit,
+ ) {
+     metrics.nar_jobs_started_total.inc();
+ 
+-    let result = run_fanout(&cfg, &up, &tx).await;
++    let result = run_fanout(&cfg, &registry, &job, &up, &tx, slot).await;
+ 
+     // Publish the terminal state to parked waiters, then evict our registry +
+     // narinfo-cache slots so the next request re-resolves cleanly.
+@@ -210,8 +245,7 @@ async fn fanout(
+     registry.cache.remove(&hash);
+ 
+     // Dropping our producing `tx` and the `Arc<Job>` (which holds the other
+-    // sender) closes the broadcast: still-attached clients see a clean EOF
+-    // (`Closed` -> stream `None`). Held to the very end so watchers observe the
++    // sender) closes the broadcast. Held to the very end so watchers observe the
+     // final `done` value and so the registry `Weak` stays upgradeable (coalesce)
+     // for the whole run.
+     drop(tx);
+@@ -221,106 +255,323 @@ async fn fanout(
+ 
+ /// Inner fan-out. `Ok(cached)` means the whole NAR was fetched, decoded, and
+ /// broadcast to clients; `cached` says whether it was *also* imported into the
+-/// local store (`false` when a dependency isn't valid here yet, so the path is
+-/// served but not cached this round). `Err` means the NAR itself couldn't be
+-/// produced (upstream/decode/corruption) and the client must not trust it.
++/// local store (`false` when there was no room to spool it or a reference
++/// couldn't be had, so the path is served but not cached this round). `Err`
++/// means the NAR itself couldn't be produced (upstream/decode/corruption) and
++/// the client must not trust it.
+ async fn run_fanout(
++    cfg: &web::Data<Config>,
++    registry: &JobRegistry,
++    job: &Job,
++    up: &Arc<UpstreamNarInfo>,
++    tx: &broadcast::Sender<Bytes>,
++    slot: tokio::sync::OwnedSemaphorePermit,
++) -> Result<bool, String> {
++    let mut spool = Spool::create(cfg, up).await;
++    let produced = produce(cfg, up, tx, &mut spool).await;
++    drop(slot);
++    if let Err(e) = produced {
++        if let Some(spool) = spool {
++            spool.remove().await;
++        }
++        return Err(e);
++    }
++    job.produced.store(true, Ordering::Release);
++
++    let Some(spool) = spool else {
++        tracing::warn!("nar {} served but not cached: no room to spool it", up.store_path);
++        return Ok(false);
++    };
++    let path = match spool.finish().await {
++        Ok(path) => path,
++        Err(e) => {
++            tracing::warn!("nar {} served but not cached: spool: {e}", up.store_path);
++            return Ok(false);
++        }
++    };
++    let res = import(cfg, registry, up, path.clone()).await;
++    let _ = tokio::fs::remove_file(&path).await;
++    let cached = classify_import(res)?;
++    if !cached {
++        tracing::warn!(
++            "nar {} served but not cached: a reference couldn't be had",
++            up.store_path,
++        );
++    }
++    Ok(cached)
++}
++
++/// Fetch and decode the NAR, broadcasting each chunk and writing it to `spool`. A
++/// spool that fails is dropped and the NAR is only streamed.
++async fn produce(
+     cfg: &Config,
+     up: &UpstreamNarInfo,
+     tx: &broadcast::Sender<Bytes>,
+-) -> Result<bool, String> {
+-    // Open the daemon that actually holds the store. Pin the client's store dir
+-    // to our configured store so the ValidPathInfo's StorePath serializes with
+-    // the right prefix (the daemon rejects paths outside its store dir).
+-    let mut client = harmonia_store_remote::DaemonClientBuilder::new()
+-        .set_store_dir(cfg.store.store_dir())
+-        .connect_unix(&cfg.miss_daemon_socket)
++    spool: &mut Option<Spool>,
++) -> Result<(), String> {
++    let nar_path = format!("/{}", up.nar_url);
++    let body = upstream::get_stream(cfg, &up.upstream, &nar_path)
+         .await
+-        .map_err(|e| format!("daemon connect: {e}"))?;
+-
+-    // The store sink: decoded NAR bytes are written into `store_w`; the daemon
+-    // drains `store_r`. These MUST run concurrently or the duplex buffer fills.
+-    let (store_w, store_r) = tokio::io::duplex(CHUNK_TARGET);
+-    let mut store_w = store_w;
++        .map_err(|e| format!("upstream nar GET: {e}"))?;
++    // Decode per the UPSTREAM narinfo's Compression. cache.nixos.org serves
++    // zstd today and xz historically; a hard-coded xz decoder fails
++    // "stream/file format not recognized" on a .nar.zst. Box the decoder so
++    // every method yields one `AsyncRead` the loop below can drive.
++    use async_compression::tokio::bufread;
++    let mut dec: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
++        match up.upstream_compression.as_str() {
++            "none" => Box::new(body),
++            "xz" => Box::new(bufread::XzDecoder::new(body)),
++            "zstd" => Box::new(bufread::ZstdDecoder::new(body)),
++            "bzip2" => Box::new(bufread::BzDecoder::new(body)),
++            other => {
++                return Err(format!("unsupported upstream compression: {other:?}"));
++            }
++        };
+ 
+-    let info = up.info.clone();
+-    let import = async move {
+-        client
+-            .add_to_store_nar(&info, BufReader::new(store_r), false, false)
++    let pace_limit = std::time::Duration::from_secs(cfg.miss_read_timeout_secs);
++    let mut buf = BytesMut::with_capacity(CHUNK_TARGET);
++    let mut total: u64 = 0;
++    loop {
++        buf.reserve(CHUNK_TARGET);
++        let n = dec
++            .read_buf(&mut buf)
+             .await
+-            .map_err(|e| format!("add_to_store_nar: {e}"))
+-    };
++            .map_err(|e| format!("nar decode: {e}"))?;
++        if n == 0 {
++            break;
++        }
++        let chunk = buf.split().freeze();
++        total += chunk.len() as u64;
++        // Clients first; zero receivers is fine. They verify the NAR's hash
++        // against the signed narinfo, so a NAR that isn't imported is safe to
++        // serve; it just isn't cached this round.
++        pace(tx, pace_limit).await;
++        let _ = tx.send(chunk.clone());
++        let failed = match spool.as_mut() {
++            Some(s) => s.write(&chunk).await.err(),
++            None => None,
++        };
++        if let Some(e) = failed
++            && let Some(s) = spool.take()
++        {
++            tracing::warn!("spool {}: {e}; streaming {} without caching it", s.path.display(), up.store_path);
++            s.remove().await;
++        }
++    }
++    if total != up.info.info.nar_size {
++        return Err(format!(
++            "nar is {total} bytes, the narinfo says {}",
++            up.info.info.nar_size
++        ));
++    }
++    Ok(())
++}
++
++/// Hold the fetch while a live client is close to falling off the end of the
++/// broadcast, for up to `limit`; a client that still can't keep up lags out.
++async fn pace(tx: &broadcast::Sender<Bytes>, limit: std::time::Duration) {
++    let deadline = tokio::time::Instant::now() + limit;
++    while tx.receiver_count() > 0 && tx.len() >= PACE_AT && tokio::time::Instant::now() < deadline {
++        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++    }
++}
+ 
+-    // The producer: fetch + xz-decode, writing every byte to the store sink
+-    // (the gate) and broadcasting each chunk (best-effort).
+-    let produce = async move {
+-        let nar_path = format!("/{}", up.nar_url);
+-        let body = upstream::get_stream(&cfg.miss_upstream_url, &nar_path)
++/// A pulled NAR on its way to the store: written as it streams, imported once whole.
++struct Spool {
++    path: PathBuf,
++    file: tokio::io::BufWriter<tokio::fs::File>,
++}
++
++impl Spool {
++    /// A new spool file for `up`, or `None` (the NAR is then only streamed) when its
++    /// filesystem would be left with less than `miss_min_free_bytes` free, or the
++    /// file can't be made.
++    async fn create(cfg: &Config, up: &UpstreamNarInfo) -> Option<Spool> {
++        static NEXT: AtomicU64 = AtomicU64::new(0);
++        let dir = &cfg.miss_spool_dir;
++        let free = match nix::sys::statvfs::statvfs(dir) {
++            Ok(s) => s.blocks_available() as u64 * s.fragment_size() as u64,
++            Err(e) => {
++                tracing::warn!("spool {}: {e}", dir.display());
++                return None;
++            }
++        };
++        if free < cfg.miss_min_free_bytes.saturating_add(up.info.info.nar_size) {
++            return None;
++        }
++        let path = dir.join(format!(
++            "{}-{}.nar",
++            up.store_path_hash,
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        match tokio::fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&path)
+             .await
+-            .map_err(|e| format!("upstream nar GET: {e}"))?;
+-        // Decode per the UPSTREAM narinfo's Compression. cache.nixos.org serves
+-        // zstd today and xz historically; a hard-coded xz decoder fails
+-        // "stream/file format not recognized" on a .nar.zst. Box the decoder so
+-        // every method yields one `AsyncRead` the loop below can drive.
+-        use async_compression::tokio::bufread;
+-        let mut dec: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
+-            match up.upstream_compression.as_str() {
+-                "none" => Box::new(body),
+-                "xz" => Box::new(bufread::XzDecoder::new(body)),
+-                "zstd" => Box::new(bufread::ZstdDecoder::new(body)),
+-                "bzip2" => Box::new(bufread::BzDecoder::new(body)),
+-                other => {
+-                    return Err(format!("unsupported upstream compression: {other:?}"));
+-                }
+-            };
+-
+-        let mut buf = BytesMut::with_capacity(CHUNK_TARGET);
+-        let mut store_open = true;
+-        loop {
+-            buf.reserve(CHUNK_TARGET);
+-            let n = dec
+-                .read_buf(&mut buf)
+-                .await
+-                .map_err(|e| format!("nar decode: {e}"))?;
+-            if n == 0 {
+-                break;
++        {
++            Ok(file) => Some(Spool {
++                path,
++                file: tokio::io::BufWriter::with_capacity(1 << 20, file),
++            }),
++            Err(e) => {
++                tracing::warn!("spool {}: {e}", path.display());
++                None
+             }
+-            let chunk = buf.split().freeze();
+-            // Feed the store sink best-effort. If the daemon hangs up (e.g. it
+-            // rejected the path because a reference isn't valid here yet), stop
+-            // feeding the store but KEEP broadcasting, so clients still receive
+-            // the full NAR. They verify its hash against the signed narinfo, so
+-            // an un-imported NAR is safe to serve; it just isn't cached this
+-            // round (it caches on a later request, once its deps have landed).
+-            if store_open && store_w.write_all(&chunk).await.is_err() {
+-                store_open = false;
++        }
++    }
++
++    async fn write(&mut self, chunk: &[u8]) -> std::io::Result<()> {
++        self.file.write_all(chunk).await
++    }
++
++    /// Flush and close the spool, returning its path; on failure it is removed.
++    async fn finish(mut self) -> std::io::Result<PathBuf> {
++        if let Err(e) = self.file.flush().await {
++            self.remove().await;
++            return Err(e);
++        }
++        Ok(self.path)
++    }
++
++    async fn remove(self) {
++        drop(self.file);
++        let _ = tokio::fs::remove_file(&self.path).await;
++    }
++}
++
++/// Drop the spool files a previous run left behind.
++pub(crate) fn clear_spool(dir: &Path) {
++    if let Ok(entries) = std::fs::read_dir(dir) {
++        for entry in entries.flatten() {
++            if entry.path().extension().is_some_and(|x| x == "nar") {
++                let _ = std::fs::remove_file(entry.path());
+             }
+-            // Best-effort broadcast; zero receivers is fine.
+-            let _ = tx.send(chunk);
+         }
+-        if store_open {
+-            let _ = store_w.shutdown().await;
++    }
++}
++
++/// The path's references, without itself.
++fn references(up: &UpstreamNarInfo) -> StorePathSet {
++    up.info
++        .info
++        .references
++        .iter()
++        .filter(|r| **r != up.info.path)
++        .cloned()
++        .collect()
++}
++
++/// Import a spooled NAR. In-flight jobs for its references are awaited first (up
++/// to `miss_reference_wait_secs`), then the reference fetcher imports it.
++async fn import(
++    cfg: &web::Data<Config>,
++    registry: &JobRegistry,
++    up: &Arc<UpstreamNarInfo>,
++    spool: PathBuf,
++) -> Result<(), String> {
++    let wait = std::time::Duration::from_secs(cfg.miss_reference_wait_secs);
++    for r in &references(up) {
++        if let Some(mut done) = registry.running(&r.hash().to_string()) {
++            let _ = tokio::time::timeout(wait, done.wait_for(|s| *s != JobState::Running)).await;
+         }
+-        Ok::<(), String>(())
+-    };
++    }
++    let (done, result) = oneshot::channel();
++    registry.fetcher().send(ImportRequest {
++        cfg: cfg.clone(),
++        up: up.clone(),
++        spool,
++        done,
++    })
++    .map_err(|_| "reference fetcher gone".to_string())?;
++    result.await.map_err(|_| "reference fetcher gone".to_string())?
++}
+ 
+-    // Drive both concurrently. The import future is the durable half; the
+-    // producer feeds it. A producer error (e.g. truncated upstream) surfaces as
+-    // an incomplete NAR, which the daemon rejects — so `import` also errors and
+-    // the path is not made valid.
+-    let (produce_res, import_res) = tokio::join!(produce, import);
+-    // A produce failure means we couldn't fetch/decode the NAR at all — the
+-    // client can't be served, so surface it.
+-    produce_res?;
+-    let cached = classify_import(import_res)?;
+-    if !cached {
+-        tracing::warn!(
+-            "nar {} served but not cached (a dependency isn't in the store yet); \
+-             it caches on a later request once its deps land",
+-            up.store_path,
+-        );
++/// A spooled NAR for the reference fetcher to import.
++struct ImportRequest {
++    cfg: web::Data<Config>,
++    up: Arc<UpstreamNarInfo>,
++    spool: PathBuf,
++    done: oneshot::Sender<Result<(), String>>,
++}
++
++type Daemon = harmonia_store_remote::DaemonClient<
++    tokio::net::unix::OwnedReadHalf,
++    tokio::net::unix::OwnedWriteHalf,
++>;
++
++/// The one task that imports: one daemon connection, one import at a time. The
++/// references a path lacks are substituted by the daemon from its own substituters,
++/// with its own keys, and only while no NAR streams to a client (up to
++/// `miss_reference_wait_secs`), so the badge's uplink goes to the clients first.
++async fn reference_fetcher(
++    mut requests: mpsc::UnboundedReceiver<ImportRequest>,
++    slots: Arc<tokio::sync::Semaphore>,
++    max_jobs: usize,
++) {
++    let mut daemon: Option<(PathBuf, Daemon)> = None;
++    while let Some(req) = requests.recv().await {
++        let res = import_one(&mut daemon, &slots, max_jobs, &req).await;
++        // A failed operation can leave the connection mid-message, and a daemon worker
++        // keeps every path it added as a temporary GC root until its connection ends:
++        // the connection lasts while imports keep coming, not past them.
++        if res.is_err() || requests.is_empty() {
++            daemon = None;
++        }
++        let _ = req.done.send(res);
+     }
+-    Ok(cached)
++}
++
++/// A reference the daemon can't get leaves the path refused as "not valid", which
++/// `classify_import` turns into served-but-not-cached.
++async fn import_one(
++    daemon: &mut Option<(PathBuf, Daemon)>,
++    slots: &tokio::sync::Semaphore,
++    max_jobs: usize,
++    req: &ImportRequest,
++) -> Result<(), String> {
++    let cfg = &req.cfg;
++    if !matches!(daemon, Some((socket, _)) if *socket == cfg.miss_daemon_socket) {
++        // Pin the client's store dir to ours so the ValidPathInfo's StorePath
++        // serializes with the right prefix (the daemon rejects paths outside its
++        // store dir).
++        let client = harmonia_store_remote::DaemonClientBuilder::new()
++            .set_store_dir(cfg.store.store_dir())
++            .connect_unix(&cfg.miss_daemon_socket)
++            .await
++            .map_err(|e| format!("daemon connect: {e}"))?;
++        *daemon = Some((cfg.miss_daemon_socket.clone(), client));
++    }
++    let Some((_, client)) = daemon else {
++        unreachable!("connected above")
++    };
++    let refs = references(&req.up);
++    if !refs.is_empty() {
++        let valid = client
++            .query_valid_paths(&refs, false)
++            .await
++            .map_err(|e| format!("query_valid_paths: {e}"))?;
++        let missing: StorePathSet = refs.difference(&valid).cloned().collect();
++        if !missing.is_empty() {
++            let deadline = tokio::time::Instant::now()
++                + std::time::Duration::from_secs(cfg.miss_reference_wait_secs);
++            while slots.available_permits() < max_jobs && tokio::time::Instant::now() < deadline {
++                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
++            }
++            client
++                .query_valid_paths(&missing, true)
++                .await
++                .map_err(|e| format!("fetching references: {e}"))?;
++        }
++    }
++    let file = tokio::fs::File::open(&req.spool)
++        .await
++        .map_err(|e| format!("spool: {e}"))?;
++    client
++        .add_to_store_nar(&req.up.info, BufReader::new(file), false, false)
++        .await
++        .map_err(|e| format!("add_to_store_nar: {e}"))
+ }
+ 
+ /// Classify a store-import result into a client-facing outcome. `Ok(true)` =
+@@ -342,8 +593,9 @@ pub(crate) enum Attach {
+     /// A live broadcast stream: the client joined the start-of-job cohort and
+     /// receives the whole NAR from the head.
+     Live(BroadcastBody),
+-    /// A mid-stream arrival: await the job's terminal state, then serve from the
+-    /// store (on `Ok`) or 404 (on `Failed`).
++    /// A mid-stream arrival: await the job's terminal state (for up to
++    /// `miss_slot_wait_secs`), then serve from the store (on `Ok`) or 404 (on
++    /// `Failed` or past the wait).
+     Parked(watch::Receiver<JobState>),
+ }
+ 
+@@ -377,18 +629,54 @@ enum CreationState {
+ /// insert/lookup — **never across the upstream fetch**. Single-fetch is instead
+ /// guaranteed by a per-hash single-flight future ([`CreationState::InProgress`]):
+ /// a herd for one missing path all awaits one `Shared` creation, while distinct
+-/// hashes create concurrently. Creation (one narinfo RTT + a task spawn) runs
+-/// off the lock; the actual NAR streaming happens in the fan-out task.
++/// hashes create concurrently. Creation (one narinfo RTT, the wait for a job slot
++/// and a task spawn) runs off the lock; the actual NAR streaming happens in the
++/// fan-out task.
+ pub(crate) struct JobRegistry {
+     jobs: std::sync::Mutex<HashMap<String, CreationState>>,
+     cache: Arc<NarInfoCache>,
++    /// One permit per NAR streaming from upstream.
++    slots: Arc<tokio::sync::Semaphore>,
++    max_jobs: usize,
++    /// The reference fetcher, started on the first import.
++    fetcher: std::sync::Mutex<Option<mpsc::UnboundedSender<ImportRequest>>>,
+ }
+ 
+ impl JobRegistry {
+-    pub(crate) fn new(cache: Arc<NarInfoCache>) -> Self {
++    pub(crate) fn new(cache: Arc<NarInfoCache>, max_jobs: usize) -> Self {
++        let max_jobs = max_jobs.max(1);
+         Self {
+             jobs: std::sync::Mutex::new(HashMap::new()),
+             cache,
++            slots: Arc::new(tokio::sync::Semaphore::new(max_jobs)),
++            max_jobs,
++            fetcher: std::sync::Mutex::new(None),
++        }
++    }
++
++    /// The reference fetcher's queue, (re)starting the task when there is none.
++    fn fetcher(&self) -> mpsc::UnboundedSender<ImportRequest> {
++        let mut fetcher = self.fetcher.lock().unwrap();
++        match fetcher.as_ref() {
++            Some(tx) if !tx.is_closed() => tx.clone(),
++            _ => {
++                let (tx, rx) = mpsc::unbounded_channel();
++                tokio::spawn(reference_fetcher(rx, self.slots.clone(), self.max_jobs));
++                *fetcher = Some(tx.clone());
++                tx
++            }
++        }
++    }
++
++    /// The terminal-state signal of the still-running job for `hash`, if any.
++    fn running(&self, hash: &str) -> Option<watch::Receiver<JobState>> {
++        let jobs = self.jobs.lock().unwrap();
++        match jobs.get(hash) {
++            Some(CreationState::Live(weak)) => weak
++                .upgrade()
++                .filter(|job| *job.done.borrow() == JobState::Running)
++                .map(|job| job.done.clone()),
++            _ => None,
+         }
+     }
+ 
+@@ -414,8 +702,9 @@ impl JobRegistry {
+     ///   subscribe — no second fetch.
+     /// * No job and no creation → install a single-flight creation future, drop
+     ///   the lock, drive it (fetch + `Job::spawn`) off the lock, then subscribe.
+-    ///   If the upstream narinfo can't be resolved, we surface a miss by
+-    ///   returning `Parked` on a channel already set to `Failed`.
++    ///   If the upstream narinfo can't be resolved or no job slot frees up in
++    ///   time, we surface a miss by returning `Parked` on a channel already set
++    ///   to `Failed`.
+     pub(crate) async fn attach(
+         self: &Arc<Self>,
+         cfg: web::Data<Config>,
+@@ -441,7 +730,7 @@ impl JobRegistry {
+             let mut jobs = self.jobs.lock().unwrap();
+             match jobs.get(store_path_hash) {
+                 Some(CreationState::Live(weak)) => match weak.upgrade() {
+-                    Some(job) if *job.done.borrow() == JobState::Running => Plan::Live(job),
++                    Some(job) if job.streaming() => Plan::Live(job),
+                     Some(job) => Plan::Parked(job.done.clone()),
+                     // Dead `Weak` (fan-out ended, slot not yet reaped, or a lost
+                     // remove race): treat as no job and create fresh.
+@@ -475,12 +764,9 @@ impl JobRegistry {
+             // Creator and coalesced waiter are now symmetric: both only *await*
+             // and *observe* the shared creation. The slot finalization (swap to
+             // `Live` on success / remove on failure) lives INSIDE the creation
+-            // future itself (see `make_creation_fut`), so it runs whenever the
+-            // creation resolves — driven by whichever task polls the `Shared` to
+-            // completion — and never depends on the first caller's request future
+-            // surviving. If the creator's request future is dropped mid-creation,
+-            // a coalesced waiter still drives the `Shared`, and the finalizer
+-            // still runs.
++            // task (see `make_creation_fut`), so it runs whenever the creation
++            // resolves and never depends on any caller's request future
++            // surviving.
+             Plan::Await(fut) | Plan::Create(fut) => match fut.await {
+                 Ok(job) => self.subscribe_after_await(&metrics, job),
+                 Err(_) => {
+@@ -498,15 +784,12 @@ impl JobRegistry {
+     /// this hash's registry slot from within the future itself. Runs entirely
+     /// off the registry lock.
+     ///
+-    /// Finalization is owned by the creation future, not by any caller's request
++    /// Finalization is owned by the creation, not by any caller's request
+     /// future: on the creation resolving, the slot is swapped `InProgress ->
+-    /// Live(Weak<Job>)` (success) or removed (failure) exactly once. Because the
+-    /// underlying `BoxCreationFut` runs a single time — driven by whichever task
+-    /// polls the `Shared` to completion — this holds even when the original
+-    /// creator's request future is dropped mid-creation: a coalesced waiter
+-    /// keeps driving the `Shared`, so the finalizer still runs. This closes the
+-    /// creator-cancellation wedge where the slot was left `InProgress(completed)`
+-    /// forever.
++    /// Live(Weak<Job>)` (success) or removed (failure) exactly once. The creation
++    /// runs in its own task, so it completes even when every request awaiting it
++    /// is dropped mid-creation: neither the registry slot nor a job slot it won is
++    /// left behind with nobody polling it.
+     fn make_creation_fut(
+         self: &Arc<Self>,
+         cfg: &web::Data<Config>,
+@@ -517,7 +800,7 @@ impl JobRegistry {
+         let cfg = cfg.clone();
+         let metrics = metrics.clone();
+         let hash = hash.to_string();
+-        let fut: BoxCreationFut = Box::pin(async move {
++        let creation = tokio::spawn(async move {
+             let result = Job::spawn(cfg, metrics, registry.clone(), hash.clone())
+                 .await
+                 .map_err(Arc::new);
+@@ -535,7 +818,7 @@ impl JobRegistry {
+                             jobs.insert(hash.clone(), CreationState::Live(Arc::downgrade(job)));
+                         }
+                         Err(e) => {
+-                            tracing::warn!("nar job resolve for {hash} failed: {e}");
++                            tracing::warn!("nar job for {hash} not started: {e}");
+                             jobs.remove(&hash);
+                         }
+                     }
+@@ -543,19 +826,24 @@ impl JobRegistry {
+             }
+             result
+         });
++        let fut: BoxCreationFut = Box::pin(async move {
++            creation
++                .await
++                .unwrap_or_else(|e| Err(Arc::new(format!("nar job creation: {e}"))))
++        });
+         fut.shared()
+     }
+ 
+     /// Subscribe an attaching client to `job` after awaiting its (possibly
+-    /// shared) creation. A still-`Running` job yields a `Live` body from a fresh
+-    /// broadcast subscription (a late arrival may miss the head but the store
+-    /// import is durable); a finished/failed job yields `Parked`.
++    /// shared) creation. A job still streaming yields a `Live` body from a fresh
++    /// broadcast subscription; one past its last chunk (importing, finished or
++    /// failed) yields `Parked`.
+     fn subscribe_after_await(
+         &self,
+         metrics: &web::Data<Arc<PrometheusMetrics>>,
+         job: Arc<Job>,
+     ) -> Attach {
+-        if *job.done.borrow() == JobState::Running {
++        if job.streaming() {
+             let rx = job.tx.subscribe();
+             metrics.nar_clients_attached_total.inc();
+             Attach::Live(BroadcastBody::new(
+@@ -597,6 +885,9 @@ pub(crate) struct BroadcastBody {
+     rx: Option<broadcast::Receiver<Bytes>>,
+     fut: Option<RecvFut>,
+     nar_size: u64,
++    /// Bytes received so far. The body ends once it has the whole NAR, without
++    /// waiting for the job (which goes on to finish the store import).
++    received: u64,
+     /// Terminal-state signal, checked on `Closed` to distinguish a completed
+     /// job (clean EOF) from a failed one (error out the client).
+     done: watch::Receiver<JobState>,
+@@ -615,6 +906,7 @@ impl BroadcastBody {
+             rx: Some(rx),
+             fut: None,
+             nar_size,
++            received: 0,
+             done,
+             metrics,
+         }
+@@ -630,6 +922,9 @@ impl Stream for BroadcastBody {
+ 
+     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+         let this = self.get_mut();
++        if this.received >= this.nar_size {
++            return Poll::Ready(None);
++        }
+ 
+         // Arm the recv future if idle, moving the sole receiver into it.
+         if this.fut.is_none() {
+@@ -647,17 +942,20 @@ impl Stream for BroadcastBody {
+                 this.fut = None;
+                 this.rx = Some(rx);
+                 match res {
+-                    Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
++                    Ok(bytes) => {
++                        this.received += bytes.len() as u64;
++                        Poll::Ready(Some(Ok(bytes)))
++                    }
+                     Err(broadcast::error::RecvError::Closed) => {
+-                        // The channel closed because the fan-out task ended and
+-                        // dropped its senders. Distinguish success (clean EOF)
+-                        // from failure (error the client so a partial NAR is not
+-                        // mistaken for a complete one).
+-                        if *this.done.borrow() == JobState::Failed {
+-                            Poll::Ready(Some(Err(std::io::Error::other("nar job failed"))))
++                        // The fan-out task ended before the whole NAR arrived:
++                        // error the client so a partial NAR is not mistaken for
++                        // a complete one.
++                        let why = if *this.done.borrow() == JobState::Failed {
++                            "nar job failed"
+                         } else {
+-                            Poll::Ready(None)
+-                        }
++                            "nar job ended early"
++                        };
++                        Poll::Ready(Some(Err(std::io::Error::other(why))))
+                     }
+                     Err(broadcast::error::RecvError::Lagged(_)) => {
+                         this.metrics.nar_clients_dropped_total.inc();
+@@ -727,6 +1025,7 @@ mod tests {
+         narinfo_text: String,
+         nar_xz: Vec<u8>,
+         golden_nar: Vec<u8>,
++        spool_dir: PathBuf,
+         _daemon: DaemonGuard,
+     }
+ 
+@@ -852,17 +1151,36 @@ mod tests {
+         )
+         .unwrap();
+ 
+-        // Start a nix-daemon on this store.
+         let socket = root.join("daemon.sock");
++        let daemon = start_daemon(&env, &socket).await;
++        let spool_dir = root.join("spool");
++        std::fs::create_dir_all(&spool_dir).unwrap();
++
++        Fixture {
++            _tmp: tmp,
++            store_dir,
++            state_dir,
++            conf_dir,
++            socket,
++            store_path_hash,
++            narinfo_text,
++            nar_xz,
++            golden_nar,
++            spool_dir,
++            _daemon: daemon,
++        }
++    }
++
++    /// Start a nix-daemon for the store `env` describes, listening on `socket`.
++    async fn start_daemon(env: &[(String, String)], socket: &Path) -> DaemonGuard {
+         let mut cmd = Command::new("nix-daemon");
+-        for (k, v) in &env {
++        for (k, v) in env {
+             cmd.env(k, v);
+         }
+-        cmd.env("NIX_DAEMON_SOCKET_PATH", &socket)
++        cmd.env("NIX_DAEMON_SOCKET_PATH", socket)
+             .env_remove("NIX_REMOTE")
+             .stdin(std::process::Stdio::null());
+         let child = cmd.spawn().unwrap();
+-        // Wait for the socket.
+         for _ in 0..600 {
+             if socket.exists() {
+                 break;
+@@ -870,19 +1188,7 @@ mod tests {
+             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+         }
+         assert!(socket.exists(), "daemon socket never appeared");
+-
+-        Fixture {
+-            _tmp: tmp,
+-            store_dir,
+-            state_dir,
+-            conf_dir,
+-            socket,
+-            store_path_hash,
+-            narinfo_text,
+-            nar_xz,
+-            golden_nar,
+-            _daemon: DaemonGuard(child),
+-        }
++        DaemonGuard(child)
+     }
+ 
+     /// A minimal HTTP/1.1 fake upstream. Serves `<hash>.narinfo` and the nar.xz;
+@@ -975,17 +1281,22 @@ mod tests {
+         (format!("http://{addr}"), counter)
+     }
+ 
+-    fn make_config(fx: &Fixture, upstream_url: String) -> web::Data<Config> {
++    fn config_for(fx: &Fixture, upstream_urls: Vec<String>) -> Config {
+         let mut cfg: Config = toml::from_str("").unwrap();
+         cfg.substitute_on_miss = true;
+-        cfg.miss_upstream_url = upstream_url;
++        cfg.miss_upstream_urls = upstream_urls;
+         cfg.miss_daemon_socket = fx.socket.clone();
++        cfg.miss_spool_dir = fx.spool_dir.clone();
+         cfg.store = crate::store::Store::new(
+             fx.store_dir.as_os_str().as_encoded_bytes().to_vec(),
+             None,
+             fx.state_dir.join("db/db.sqlite"),
+         );
+-        web::Data::new(cfg)
++        cfg
++    }
++
++    fn make_config(fx: &Fixture, upstream_urls: Vec<String>) -> web::Data<Config> {
++        web::Data::new(config_for(fx, upstream_urls))
+     }
+ 
+     fn nar_url_from(narinfo: &str) -> String {
+@@ -1042,10 +1353,10 @@ mod tests {
+         let nar_url = nar_url_from(&fx.narinfo_text);
+         let (upstream_url, counter) =
+             spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 200).await;
+-        let cfg = make_config(&fx, upstream_url);
++        let cfg = make_config(&fx, vec![upstream_url]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         // N concurrent attachers for the same missing path, launched together
+         // (no stagger) so they all coalesce onto one live job.
+@@ -1107,10 +1418,10 @@ mod tests {
+         let nar_url = nar_url_from(&fx.narinfo_text);
+         let (upstream_url, counter) =
+             spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
+-        let cfg = make_config(&fx, upstream_url);
++        let cfg = make_config(&fx, vec![upstream_url]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         let body = match registry.attach(cfg, metrics, &fx.store_path_hash).await {
+             Attach::Live(body) => drain(body).await.expect("client body errored"),
+@@ -1153,10 +1464,10 @@ mod tests {
+         let nar_url = nar_url_from(&fx.narinfo_text);
+         let (upstream_url, _counter) =
+             spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
+-        let cfg = make_config(&fx, upstream_url);
++        let cfg = make_config(&fx, vec![upstream_url]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         // Lead client attaches then immediately drops its body mid-stream.
+         match registry
+@@ -1190,10 +1501,10 @@ mod tests {
+         // truncate=true: upstream sends half the nar.xz then hangs up.
+         let (upstream_url, _counter) =
+             spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), true, 0).await;
+-        let cfg = make_config(&fx, upstream_url);
++        let cfg = make_config(&fx, vec![upstream_url]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         let body_res = match registry
+             .attach(cfg.clone(), metrics.clone(), &fx.store_path_hash)
+@@ -1352,12 +1663,12 @@ mod tests {
+         )
+         .await;
+ 
+-        let cfg_a = make_config(&fx_a, url_a);
+-        let cfg_b = make_config(&fx_b, url_b);
++        let cfg_a = make_config(&fx_a, vec![url_a]);
++        let cfg_b = make_config(&fx_b, vec![url_b]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         // One shared registry: distinct hashes must not serialize on it.
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         let (ra, rb) = (registry.clone(), registry.clone());
+         let (ma, mb) = (metrics.clone(), metrics.clone());
+@@ -1471,10 +1782,10 @@ mod tests {
+             300,
+         )
+         .await;
+-        let cfg = make_config(&fx, upstream_url);
++        let cfg = make_config(&fx, vec![upstream_url]);
+         let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
+         let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
+-        let registry = Arc::new(JobRegistry::new(cache));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
+ 
+         // 1. Creator: drive it once so it installs the InProgress slot and issues
+         //    the (delayed) narinfo GET, then leave it Pending.
+@@ -1637,4 +1948,924 @@ mod tests {
+ 
+         (format!("http://{addr}"), counter)
+     }
++
++    /// An upstream with nothing on it: 404 for every request, counting them.
++    async fn spawn_missing_upstream() -> (String, Arc<AtomicUsize>) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let counter_task = counter.clone();
++        tokio::spawn(async move {
++            while let Ok((mut sock, _)) = listener.accept().await {
++                let counter = counter_task.clone();
++                tokio::spawn(async move {
++                    let mut buf = vec![0u8; 4096];
++                    if matches!(sock.read(&mut buf).await, Ok(n) if n > 0) {
++                        counter.fetch_add(1, Ordering::SeqCst);
++                        let _ = sock
++                            .write_all(
++                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
++                            )
++                            .await;
++                    }
++                });
++            }
++        });
++        (format!("http://{addr}"), counter)
++    }
++
++    /// One fresh registry and one attach for `fx`'s path.
++    async fn attach_once(cfg: web::Data<Config>, fx: &Fixture) -> Attach {
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
++        registry.attach(cfg, metrics, &fx.store_path_hash).await
++    }
++
++    async fn wait_valid(fx: &Fixture) -> bool {
++        for _ in 0..100 {
++            if path_is_valid(fx) {
++                return true;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        false
++    }
++
++    #[tokio::test]
++    async fn second_upstream_serves_when_first_misses() {
++        let fx = make_fixture().await;
++        let (missing, missing_hits) = spawn_missing_upstream().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, nar_gets) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, vec![missing, upstream]);
++        let body = match attach_once(cfg, &fx).await {
++            Attach::Live(body) => drain(body).await.expect("client body errored"),
++            Attach::Parked(_) => panic!("expected a live job"),
++        };
++        assert_eq!(body, fx.golden_nar, "body != golden NAR");
++        assert_eq!(nar_gets.load(Ordering::SeqCst), 1, "the NAR comes from the second upstream");
++        assert_eq!(missing_hits.load(Ordering::SeqCst), 1, "the first upstream saw only the narinfo request");
++        assert!(wait_valid(&fx).await, "path did not become valid");
++    }
++
++    #[tokio::test]
++    async fn first_upstream_wins() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (first, first_gets) = spawn_upstream(
++            fx.narinfo_text.clone(),
++            nar_url.clone(),
++            fx.nar_xz.clone(),
++            false,
++            0,
++        )
++        .await;
++        let (second, second_gets) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, vec![first, second]);
++        let body = match attach_once(cfg, &fx).await {
++            Attach::Live(body) => drain(body).await.expect("client body errored"),
++            Attach::Parked(_) => panic!("expected a live job"),
++        };
++        assert_eq!(body, fx.golden_nar);
++        assert_eq!(first_gets.load(Ordering::SeqCst), 1, "the first upstream serves the NAR");
++        assert_eq!(second_gets.load(Ordering::SeqCst), 0, "the second upstream is never asked");
++    }
++
++    #[tokio::test]
++    async fn no_upstream_has_it() {
++        let fx = make_fixture().await;
++        let (a, a_hits) = spawn_missing_upstream().await;
++        let (b, b_hits) = spawn_missing_upstream().await;
++        let cfg = make_config(&fx, vec![a, b]);
++        match attach_once(cfg, &fx).await {
++            Attach::Parked(rx) => assert!(*rx.borrow() == JobState::Failed, "expected a failed job"),
++            Attach::Live(_) => panic!("a path no upstream has started a live job"),
++        }
++        assert_eq!(a_hits.load(Ordering::SeqCst), 1);
++        assert_eq!(b_hits.load(Ordering::SeqCst), 1);
++        assert!(!path_is_valid(&fx));
++    }
++
++    /// About 4.4 MB: more than the 64 KiB store pipe and the small test buffer.
++    fn big_payload() -> String {
++        "streaming NAR job: a payload bigger than any pipe between us and the store\n".repeat(60_000)
++    }
++
++    /// `kill -STOP`/`-CONT` the fixture's nix-daemon, standing in for a slow store.
++    fn signal_daemon(fx: &Fixture, signal: &str) {
++        let status = Command::new("kill")
++            .args([signal, &fx._daemon.0.id().to_string()])
++            .status()
++            .unwrap();
++        assert!(status.success(), "kill {signal} failed");
++    }
++
++    async fn drain_live(cfg: web::Data<Config>, fx: &Fixture) -> Result<Vec<u8>, std::io::Error> {
++        match attach_once(cfg, fx).await {
++            Attach::Live(body) => drain(body).await,
++            Attach::Parked(_) => Err(std::io::Error::other("unexpected Parked")),
++        }
++    }
++
++    #[tokio::test]
++    async fn stalled_store_does_not_slow_clients() {
++        let fx = make_fixture_with_payload(&big_payload()).await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, _) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, vec![upstream]);
++        signal_daemon(&fx, "-STOP");
++        let body =
++            tokio::time::timeout(std::time::Duration::from_secs(10), drain_live(cfg, &fx)).await;
++        signal_daemon(&fx, "-CONT");
++        let body = body
++            .expect("the client waited on the stalled store")
++            .expect("client body errored");
++        assert_eq!(body, fx.golden_nar, "body != golden NAR");
++        assert!(wait_valid(&fx).await, "the import did not finish once the store resumed");
++    }
++
++    /// About 22 MB: more than the broadcast holds and than a RAM import buffer would.
++    fn huge_payload() -> String {
++        big_payload().repeat(5)
++    }
++
++    async fn spool_empties(fx: &Fixture) -> bool {
++        for _ in 0..40 {
++            if std::fs::read_dir(&fx.spool_dir).unwrap().next().is_none() {
++                return true;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        false
++    }
++
++    #[tokio::test]
++    async fn stalled_store_still_caches_a_huge_nar() {
++        let fx = make_fixture_with_payload(&huge_payload()).await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, nar_gets) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, vec![upstream]);
++        signal_daemon(&fx, "-STOP");
++        let body =
++            tokio::time::timeout(std::time::Duration::from_secs(20), drain_live(cfg, &fx)).await;
++        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
++        signal_daemon(&fx, "-CONT");
++        let body = body
++            .expect("the client waited on the stalled store")
++            .expect("client body errored");
++        assert_eq!(body, fx.golden_nar, "body != golden NAR");
++        assert!(wait_valid(&fx).await, "the spooled NAR was not imported once the store resumed");
++        assert_eq!(nar_gets.load(Ordering::SeqCst), 1, "it took a second fetch to cache");
++        assert!(spool_empties(&fx).await, "the spool was left behind");
++    }
++
++    #[tokio::test]
++    async fn slow_client_is_paced_not_dropped() {
++        let fx = make_fixture_with_payload(&huge_payload()).await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, _) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let mut body = match attach_once(make_config(&fx, vec![upstream]), &fx).await {
++            Attach::Live(body) => body,
++            Attach::Parked(_) => panic!("expected a live job"),
++        };
++        let mut out = Vec::new();
++        while let Some(item) = body.next().await {
++            out.extend_from_slice(&item.expect("the slow client was dropped"));
++            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
++        }
++        assert_eq!(out, fx.golden_nar);
++    }
++
++    #[tokio::test]
++    async fn low_space_streams_without_caching() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, _) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let mut cfg = config_for(&fx, vec![upstream]);
++        cfg.miss_min_free_bytes = u64::MAX;
++        let body = drain_live(web::Data::new(cfg), &fx).await.expect("client body errored");
++        assert_eq!(body, fx.golden_nar);
++        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
++        assert!(!path_is_valid(&fx), "a NAR was cached below the free-space floor");
++        assert!(spool_empties(&fx).await, "a NAR was spooled below the free-space floor");
++    }
++
++    #[tokio::test]
++    async fn late_arrival_parks_while_importing() {
++        let fx = make_fixture().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, _) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let cfg = make_config(&fx, vec![upstream]);
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        let registry = Arc::new(JobRegistry::new(cache, 8));
++        signal_daemon(&fx, "-STOP");
++        let first = match registry.attach(cfg.clone(), metrics.clone(), &fx.store_path_hash).await {
++            Attach::Live(body) => drain(body).await.expect("client body errored"),
++            Attach::Parked(_) => panic!("expected a live job"),
++        };
++        assert_eq!(first, fx.golden_nar);
++        let late = registry.attach(cfg, metrics, &fx.store_path_hash).await;
++        signal_daemon(&fx, "-CONT");
++        match late {
++            Attach::Parked(mut done) => {
++                let state = tokio::time::timeout(
++                    std::time::Duration::from_secs(10),
++                    done.wait_for(|s| *s != JobState::Running),
++                )
++                .await
++                .expect("the import never finished")
++                .map(|s| *s)
++                .unwrap();
++                assert_eq!(state, JobState::Ok);
++            }
++            Attach::Live(_) => panic!("a late arrival got a stream with no head"),
++        }
++        assert!(path_is_valid(&fx));
++    }
++
++    /// Paths in one store: Q; R and R2, which refer to Q; S, which refers to nothing.
++    /// All are in a signed binary cache and gone from the store. The daemon trusts
++    /// the key and substitutes from that cache itself as `subst` says.
++    struct RefFixture {
++        _tmp: tempfile::TempDir,
++        root: PathBuf,
++        store_dir: PathBuf,
++        state_dir: PathBuf,
++        socket: PathBuf,
++        spool_dir: PathBuf,
++        env: Vec<(String, String)>,
++        q: String,
++        r: String,
++        r2: String,
++        s: String,
++        bc: PathBuf,
++        /// With `DaemonSubst::Http`: every request the daemon's substituter got.
++        subst_log: Option<RequestLog>,
++        _daemon: DaemonGuard,
++    }
++
++    /// Where a `RefFixture`'s daemon substitutes from.
++    enum DaemonSubst {
++        Off,
++        /// The cache directory, as `file://`.
++        File,
++        /// The cache directory, served over HTTP with every request logged.
++        Http,
++    }
++
++    type RequestLog = Arc<std::sync::Mutex<Vec<(String, std::time::Instant)>>>;
++
++    async fn make_ref_fixture(substitute: bool) -> RefFixture {
++        make_ref_fixture_with(if substitute { DaemonSubst::File } else { DaemonSubst::Off }).await
++    }
++
++    async fn make_ref_fixture_with(subst: DaemonSubst) -> RefFixture {
++        let tmp = tempfile::Builder::new().prefix("streamref").tempdir().unwrap();
++        let root = tmp.path().canonicalize().unwrap();
++        let store_dir = root.join("store");
++        let state_dir = root.join("var/nix");
++        let conf_dir = root.join("etc");
++        std::fs::create_dir_all(&conf_dir).unwrap();
++        let env = nix_env(&root);
++        let local = format!("local?store={}&state={}", store_dir.display(), state_dir.display());
++        run_nix(&["nix-store", "--init", "--store", &local], &env).unwrap();
++
++        let q_file = root.join("q.txt");
++        std::fs::write(&q_file, "the reference\n").unwrap();
++        let q = run_nix(&["nix-store", "--add", q_file.to_str().unwrap()], &env).unwrap();
++        let s_file = root.join("s.txt");
++        std::fs::write(&s_file, "an unrelated path\n").unwrap();
++        let s = run_nix(&["nix-store", "--add", s_file.to_str().unwrap()], &env).unwrap();
++        // R and R2 are input-addressed and name Q, so the daemon wants a signature
++        // for each and Q valid before it registers them.
++        let r = format!("{}/{}-cache-test-r", store_dir.display(), "r".repeat(32));
++        std::fs::write(&r, format!("refers to {q}\n")).unwrap();
++        let r2 = format!("{}/{}-cache-test-r2", store_dir.display(), "p".repeat(32));
++        std::fs::write(&r2, format!("also refers to {q}\n")).unwrap();
++        let mut reg = Command::new("nix-store");
++        reg.arg("--register-validity").envs(env.iter().cloned()).env_remove("NIX_REMOTE");
++        reg.stdin(std::process::Stdio::piped());
++        let mut child = reg.spawn().unwrap();
++        {
++            use std::io::Write as _;
++            let mut stdin = child.stdin.take().unwrap();
++            write!(stdin, "{r}\n\n1\n{q}\n{r2}\n\n1\n{q}\n").unwrap();
++        }
++        assert!(child.wait().unwrap().success(), "registering R and R2 failed");
++
++        let key_file = root.join("cache.sk");
++        std::fs::write(&key_file, SIGNING_KEY.trim()).unwrap();
++        let bc = root.join("bc");
++        run_nix(
++            &[
++                "nix",
++                "--extra-experimental-features",
++                "nix-command",
++                "copy",
++                "--to",
++                // A binary cache signs what it is given only with its own secret-key.
++                &format!("file://{}?compression=xz&secret-key={}", bc.display(), key_file.display()),
++                &r,
++                &r2,
++                &s,
++            ],
++            &env,
++        )
++        .unwrap();
++        run_nix(&["nix-store", "--delete", &r, &r2, &s, &q], &env).unwrap();
++
++        let mut subst_log = None;
++        let substituters = match subst {
++            DaemonSubst::Off => String::new(),
++            DaemonSubst::File => format!("file://{}", bc.display()),
++            DaemonSubst::Http => {
++                let (url, log) = serve_cache(bc.clone()).await;
++                subst_log = Some(log);
++                url
++            }
++        };
++        std::fs::write(
++            conf_dir.join("nix.conf"),
++            format!("trusted-public-keys = {}\nsubstituters = {substituters}\n", PUBLIC_KEY.trim()),
++        )
++        .unwrap();
++
++        let socket = root.join("daemon.sock");
++        let daemon = start_daemon(&env, &socket).await;
++        let spool_dir = root.join("spool");
++        std::fs::create_dir_all(&spool_dir).unwrap();
++        RefFixture {
++            _tmp: tmp,
++            root,
++            store_dir,
++            state_dir,
++            socket,
++            spool_dir,
++            env,
++            q,
++            r,
++            r2,
++            s,
++            bc,
++            subst_log,
++            _daemon: daemon,
++        }
++    }
++
++    /// Serve `dir` as a binary cache over HTTP, logging each request's path and time.
++    async fn serve_cache(dir: PathBuf) -> (String, RequestLog) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let log: RequestLog = Arc::default();
++        let log_task = log.clone();
++        tokio::spawn(async move {
++            while let Ok((mut sock, _)) = listener.accept().await {
++                let (dir, log) = (dir.clone(), log_task.clone());
++                tokio::spawn(async move {
++                    let mut buf = vec![0u8; 4096];
++                    let n = match sock.read(&mut buf).await {
++                        Ok(0) | Err(_) => return,
++                        Ok(n) => n,
++                    };
++                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
++                    let mut first = req.lines().next().unwrap_or("").split_whitespace();
++                    let method = first.next().unwrap_or("GET").to_string();
++                    let path = first.next().unwrap_or("/").trim_start_matches('/').to_string();
++                    log.lock().unwrap().push((path.clone(), std::time::Instant::now()));
++                    match std::fs::read(dir.join(&path)) {
++                        Ok(body) if !path.is_empty() && !path.contains("..") => {
++                            let head = format!(
++                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++                                body.len()
++                            );
++                            let _ = sock.write_all(head.as_bytes()).await;
++                            if method != "HEAD" {
++                                let _ = sock.write_all(&body).await;
++                            }
++                        }
++                        _ => {
++                            let _ = sock
++                                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++                                .await;
++                        }
++                    }
++                    let _ = sock.flush().await;
++                });
++            }
++        });
++        (format!("http://{addr}"), log)
++    }
++
++    /// A socket that forwards to the daemon's, counting the connections made to it.
++    async fn count_daemon_connections(daemon: &Path, dir: &Path) -> (PathBuf, Arc<AtomicUsize>) {
++        let proxy = dir.join("proxy.sock");
++        let listener = tokio::net::UnixListener::bind(&proxy).unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let (counter_task, daemon) = (counter.clone(), daemon.to_path_buf());
++        tokio::spawn(async move {
++            while let Ok((mut client, _)) = listener.accept().await {
++                counter_task.fetch_add(1, Ordering::SeqCst);
++                let daemon = daemon.clone();
++                tokio::spawn(async move {
++                    if let Ok(mut d) = tokio::net::UnixStream::connect(&daemon).await {
++                        let _ = tokio::io::copy_bidirectional(&mut client, &mut d).await;
++                    }
++                });
++            }
++        });
++        (proxy, counter)
++    }
++
++    /// NAR GETs of one path on a fake upstream, and when each began to be answered.
++    #[derive(Clone, Default)]
++    struct NarHits {
++        gets: Arc<AtomicUsize>,
++        sent: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
++    }
++
++    impl RefFixture {
++        fn hash_of(path: &str) -> String {
++            Path::new(path).file_name().unwrap().to_str().unwrap()[..32].to_string()
++        }
++
++        fn narinfo(&self, path: &str) -> String {
++            std::fs::read_to_string(self.bc.join(format!("{}.narinfo", Self::hash_of(path)))).unwrap()
++        }
++
++        fn nar(&self, path: &str) -> (String, Vec<u8>) {
++            let url = nar_url_from(&self.narinfo(path));
++            let bytes = std::fs::read(self.bc.join(&url)).unwrap();
++            (url, bytes)
++        }
++
++        fn is_valid(&self, path: &str) -> bool {
++            let mut cmd = Command::new("nix-store");
++            cmd.args(["-q", "--hash", path]);
++            for (k, v) in &self.env {
++                if k != "NIX_REMOTE" {
++                    cmd.env(k, v);
++                }
++            }
++            cmd.env("NIX_REMOTE", format!("unix://{}", self.socket.display()));
++            cmd.output().map(|o| o.status.success()).unwrap_or(false)
++        }
++
++        async fn wait_valid(&self, path: &str) -> bool {
++            for _ in 0..200 {
++                if self.is_valid(path) {
++                    return true;
++                }
++                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++            }
++            false
++        }
++
++        fn settings(&self, upstreams: Vec<String>, max_jobs: usize) -> Config {
++            let mut cfg: Config = toml::from_str("").unwrap();
++            cfg.substitute_on_miss = true;
++            cfg.miss_upstream_urls = upstreams;
++            cfg.miss_daemon_socket = self.socket.clone();
++            cfg.miss_spool_dir = self.spool_dir.clone();
++            cfg.miss_max_jobs = max_jobs;
++            cfg.store = crate::store::Store::new(
++                self.store_dir.as_os_str().as_encoded_bytes().to_vec(),
++                None,
++                self.state_dir.join("db/db.sqlite"),
++            );
++            cfg
++        }
++
++        fn config(&self, upstream: String, max_jobs: usize) -> web::Data<Config> {
++            web::Data::new(self.settings(vec![upstream], max_jobs))
++        }
++
++        /// An upstream serving Q and R from the fixture's cache, holding each
++        /// path's NAR response for its delay; counts NAR GETs per path.
++        async fn upstream(&self, delays_ms: (u64, u64)) -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
++            let (url, hits) = self.serve(&[(self.q.as_str(), delays_ms.0), (self.r.as_str(), delays_ms.1)]).await;
++            (url, hits[0].gets.clone(), hits[1].gets.clone())
++        }
++
++        /// An upstream serving `paths` from the fixture's cache, holding each
++        /// path's NAR response for its delay.
++        async fn serve(&self, paths: &[(&str, u64)]) -> (String, Vec<NarHits>) {
++            self.serve_at("127.0.0.1:0", paths).await
++        }
++
++        /// [`Self::serve`] on the address `at`.
++        async fn serve_at(&self, at: &str, paths: &[(&str, u64)]) -> (String, Vec<NarHits>) {
++            let hits: Vec<NarHits> = paths.iter().map(|_| NarHits::default()).collect();
++            let paths: Vec<_> = paths
++                .iter()
++                .zip(&hits)
++                .map(|((path, delay), hits)| {
++                    let (url, bytes) = self.nar(path);
++                    (Self::hash_of(path), self.narinfo(path), url, bytes, *delay, hits.clone())
++                })
++                .collect();
++            let paths = Arc::new(paths);
++            let listener = TcpListener::bind(at).await.unwrap();
++            let addr = listener.local_addr().unwrap();
++            tokio::spawn(async move {
++                while let Ok((mut sock, _)) = listener.accept().await {
++                    let paths = paths.clone();
++                    tokio::spawn(async move {
++                        let mut buf = vec![0u8; 4096];
++                        let n = match sock.read(&mut buf).await {
++                            Ok(0) | Err(_) => return,
++                            Ok(n) => n,
++                        };
++                        let req = String::from_utf8_lossy(&buf[..n]).to_string();
++                        let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/");
++                        let path = path.trim_start_matches('/');
++                        for (hash, narinfo, url, bytes, delay, hits) in paths.iter() {
++                            let body: &[u8] = if path == format!("{hash}.narinfo") {
++                                narinfo.as_bytes()
++                            } else if path == url {
++                                hits.gets.fetch_add(1, Ordering::SeqCst);
++                                tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
++                                hits.sent.lock().unwrap().push(std::time::Instant::now());
++                                bytes
++                            } else {
++                                continue;
++                            };
++                            let head = format!(
++                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++                                body.len()
++                            );
++                            let _ = sock.write_all(head.as_bytes()).await;
++                            let _ = sock.write_all(body).await;
++                            return;
++                        }
++                        let _ = sock
++                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
++                            .await;
++                    });
++                }
++            });
++            (format!("http://{addr}"), hits)
++        }
++    }
++
++    fn registry(max_jobs: usize) -> (Arc<JobRegistry>, web::Data<Arc<PrometheusMetrics>>) {
++        let metrics = web::Data::new(crate::prometheus::initialize_metrics().unwrap());
++        let cache = Arc::new(NarInfoCache::new(16, std::time::Duration::from_secs(60)));
++        (Arc::new(JobRegistry::new(cache, max_jobs)), metrics)
++    }
++
++    /// Attach to `path` on `registry` and drain the live body.
++    async fn fetch(
++        registry: &Arc<JobRegistry>,
++        metrics: &web::Data<Arc<PrometheusMetrics>>,
++        cfg: &web::Data<Config>,
++        path: &str,
++    ) -> Vec<u8> {
++        match registry.attach(cfg.clone(), metrics.clone(), &RefFixture::hash_of(path)).await {
++            Attach::Live(body) => drain(body).await.expect("client body errored"),
++            Attach::Parked(_) => panic!("expected a live job for {path}"),
++        }
++    }
++
++    #[tokio::test]
++    async fn missing_reference_is_fetched_before_import() {
++        let fx = make_ref_fixture(true).await;
++        let (upstream, q_gets, r_gets) = fx.upstream((0, 0)).await;
++        let cfg = fx.config(upstream, 8);
++        let (registry, metrics) = registry(8);
++        // The client already has Q, so it asks for R alone.
++        fetch(&registry, &metrics, &cfg, &fx.r).await;
++        assert!(fx.wait_valid(&fx.r).await, "R was served but not cached");
++        assert!(fx.is_valid(&fx.q), "R is valid without its reference");
++        assert_eq!(r_gets.load(Ordering::SeqCst), 1);
++        assert_eq!(q_gets.load(Ordering::SeqCst), 0, "the badge's daemon fetches Q, not a client job");
++    }
++
++    #[tokio::test]
++    async fn reference_job_in_flight_is_awaited() {
++        // No substituters on the daemon: Q only arrives through its own job, which
++        // the upstream holds back so R's NAR is complete first.
++        let fx = make_ref_fixture(false).await;
++        let (upstream, q_gets, _) = fx.upstream((1500, 0)).await;
++        let cfg = fx.config(upstream, 8);
++        let (registry, metrics) = registry(8);
++        let q = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.q.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        fetch(&registry, &metrics, &cfg, &fx.r).await;
++        q.await.unwrap();
++        assert!(fx.wait_valid(&fx.q).await, "Q was not cached");
++        assert!(fx.wait_valid(&fx.r).await, "R was imported before its reference landed");
++        assert_eq!(q_gets.load(Ordering::SeqCst), 1);
++    }
++
++    #[tokio::test]
++    async fn jobs_beyond_the_limit_wait_for_a_slot() {
++        let fx = make_ref_fixture(false).await;
++        let (upstream, _, r_gets) = fx.upstream((1500, 0)).await;
++        let cfg = fx.config(upstream, 1);
++        let (registry, metrics) = registry(1);
++        let q = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.q.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        let r = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.r.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
++        assert_eq!(r_gets.load(Ordering::SeqCst), 0, "a second NAR streamed past the limit");
++        q.await.unwrap();
++        r.await.unwrap();
++        assert_eq!(r_gets.load(Ordering::SeqCst), 1);
++    }
++
++    #[tokio::test]
++    async fn references_are_fetched_on_one_connection_while_idle() {
++        // R and R2 both lack Q, which only the daemon's own substituter has. S's NAR
++        // is held back, so a client is mid-stream while R and R2 are imported.
++        let fx = make_ref_fixture_with(DaemonSubst::Http).await;
++        let (upstream, hits) = fx.serve(&[(fx.r.as_str(), 0), (fx.r2.as_str(), 0), (fx.s.as_str(), 2000)]).await;
++        let mut cfg = fx.settings(vec![upstream], 8);
++        let (proxy, connections) = count_daemon_connections(&fx.socket, &fx.root).await;
++        cfg.miss_daemon_socket = proxy;
++        let cfg = web::Data::new(cfg);
++        let (registry, metrics) = registry(8);
++        let s = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.s.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        // The clients already have Q, so they ask for R and R2 alone.
++        tokio::join!(
++            fetch(&registry, &metrics, &cfg, &fx.r),
++            fetch(&registry, &metrics, &cfg, &fx.r2)
++        );
++        s.await.unwrap();
++        assert!(fx.wait_valid(&fx.r).await, "R was served but not cached");
++        assert!(fx.wait_valid(&fx.r2).await, "R2 was served but not cached");
++
++        let q_hash = RefFixture::hash_of(&fx.q);
++        let (q_nar, _) = fx.nar(&fx.q);
++        let log = fx.subst_log.as_ref().unwrap().lock().unwrap().clone();
++        let q_requests: Vec<_> = log.iter().filter(|(p, _)| p.starts_with(&q_hash) || *p == q_nar).collect();
++        assert_eq!(
++            q_requests.iter().filter(|(p, _)| *p == q_nar).count(),
++            1,
++            "Q's NAR was fetched other than once: {log:?}"
++        );
++        assert_eq!(connections.load(Ordering::SeqCst), 1, "the imports opened more than one daemon connection");
++        let s_sent = hits[2].sent.lock().unwrap()[0];
++        assert!(
++            q_requests.iter().all(|(_, at)| *at >= s_sent),
++            "Q was fetched while S was streaming: {log:?}"
++        );
++    }
++
++    /// An upstream that accepts connections and never answers; counts the connections.
++    async fn spawn_silent_upstream() -> (String, Arc<AtomicUsize>) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let counter_task = counter.clone();
++        tokio::spawn(async move {
++            let mut held = Vec::new();
++            while let Ok((sock, _)) = listener.accept().await {
++                counter_task.fetch_add(1, Ordering::SeqCst);
++                held.push(sock);
++            }
++        });
++        (format!("http://{addr}"), counter)
++    }
++
++    /// Serves the narinfo, but stalls the first NAR request halfway (headers and
++    /// half the body, then silence); later NAR requests get it whole.
++    async fn spawn_stalling_upstream(
++        narinfo_text: String,
++        nar_xz: Vec<u8>,
++    ) -> (String, Arc<AtomicUsize>) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let counter = Arc::new(AtomicUsize::new(0));
++        let counter_task = counter.clone();
++        tokio::spawn(async move {
++            let mut held = Vec::new();
++            while let Ok((mut sock, _)) = listener.accept().await {
++                let mut buf = vec![0u8; 4096];
++                let n = match sock.read(&mut buf).await {
++                    Ok(0) | Err(_) => continue,
++                    Ok(n) => n,
++                };
++                let req = String::from_utf8_lossy(&buf[..n]).to_string();
++                let path = req
++                    .lines()
++                    .next()
++                    .and_then(|l| l.split_whitespace().nth(1))
++                    .unwrap_or("/")
++                    .to_string();
++                if path.ends_with(".narinfo") {
++                    let head = format!(
++                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/x-nix-narinfo\r\nConnection: close\r\n\r\n",
++                        narinfo_text.len()
++                    );
++                    let _ = sock.write_all(head.as_bytes()).await;
++                    let _ = sock.write_all(narinfo_text.as_bytes()).await;
++                    continue;
++                }
++                let head = format!(
++                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-xz\r\nConnection: close\r\n\r\n",
++                    nar_xz.len()
++                );
++                let _ = sock.write_all(head.as_bytes()).await;
++                if counter_task.fetch_add(1, Ordering::SeqCst) == 0 {
++                    let _ = sock.write_all(&nar_xz[..nar_xz.len() / 2]).await;
++                    held.push(sock);
++                } else {
++                    let _ = sock.write_all(&nar_xz).await;
++                }
++            }
++        });
++        (format!("http://{addr}"), counter)
++    }
++
++    #[tokio::test]
++    async fn stalled_narinfo_moves_on() {
++        let fx = make_fixture().await;
++        let (silent, _) = spawn_silent_upstream().await;
++        let nar_url = nar_url_from(&fx.narinfo_text);
++        let (upstream, nar_gets) =
++            spawn_upstream(fx.narinfo_text.clone(), nar_url, fx.nar_xz.clone(), false, 0).await;
++        let mut cfg = config_for(&fx, vec![silent, upstream]);
++        cfg.miss_read_timeout_secs = 1;
++        let started = std::time::Instant::now();
++        let body = tokio::time::timeout(
++            std::time::Duration::from_secs(10),
++            drain_live(web::Data::new(cfg), &fx),
++        )
++        .await
++        .expect("the silent upstream held the request")
++        .expect("client body errored");
++        assert_eq!(body, fx.golden_nar);
++        assert!(
++            started.elapsed() < std::time::Duration::from_secs(4),
++            "moving on took {:?}",
++            started.elapsed()
++        );
++        assert_eq!(nar_gets.load(Ordering::SeqCst), 1);
++    }
++
++    #[tokio::test]
++    async fn stalled_body_fails_and_retries() {
++        let fx = make_fixture_with_payload(&big_payload()).await;
++        let (upstream, nar_gets) =
++            spawn_stalling_upstream(fx.narinfo_text.clone(), fx.nar_xz.clone()).await;
++        let mut cfg = config_for(&fx, vec![upstream]);
++        cfg.miss_read_timeout_secs = 1;
++        let cfg = web::Data::new(cfg);
++        let started = std::time::Instant::now();
++        let first =
++            tokio::time::timeout(std::time::Duration::from_secs(10), drain_live(cfg.clone(), &fx))
++                .await
++                .expect("a stalled upstream hung the client");
++        assert!(first.is_err(), "half a NAR was served as a whole one");
++        assert!(
++            started.elapsed() < std::time::Duration::from_secs(5),
++            "failing took {:?}",
++            started.elapsed()
++        );
++        // The failed job is gone; the next request starts a fresh one.
++        let second = drain_live(cfg, &fx).await.expect("second client body errored");
++        assert_eq!(second, fx.golden_nar);
++        assert!(wait_valid(&fx).await, "the retry did not import the path");
++        assert_eq!(nar_gets.load(Ordering::SeqCst), 2);
++    }
++
++    #[tokio::test]
++    async fn a_late_request_for_a_queued_import_is_a_miss() {
++        // S streams for a while, so R's import waits to fetch Q, and R2's import waits
++        // behind R's. A request for R2 after its last chunk must not wait for all that.
++        let fx = make_ref_fixture_with(DaemonSubst::Http).await;
++        let (upstream, _) = fx.serve(&[(fx.r.as_str(), 0), (fx.r2.as_str(), 0), (fx.s.as_str(), 6000)]).await;
++        let mut cfg = fx.settings(vec![upstream], 8);
++        cfg.miss_slot_wait_secs = 1;
++        let cfg = web::Data::new(cfg);
++        let (registry, metrics) = registry(8);
++        let s = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.s.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        fetch(&registry, &metrics, &cfg, &fx.r).await;
++        fetch(&registry, &metrics, &cfg, &fx.r2).await;
++        // The body ends with the last chunk, a moment before the job marks itself produced.
++        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
++        let app = actix_web::test::init_service(
++            actix_web::App::new()
++                .app_data(cfg.clone())
++                .app_data(web::Data::new(registry.clone()))
++                .app_data(metrics.clone())
++                .route("/nar/{narhash}.nar", web::get().to(crate::nar::get)),
++        )
++        .await;
++        let req = actix_web::test::TestRequest::get()
++            .uri(&format!("/nar/{}.nar?hash={}", "0".repeat(52), RefFixture::hash_of(&fx.r2)))
++            .to_request();
++        let started = std::time::Instant::now();
++        let resp = tokio::time::timeout(
++            std::time::Duration::from_secs(4),
++            actix_web::test::call_service(&app, req),
++        )
++        .await
++        .expect("the late request waited for the import queue");
++        assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
++        assert!(started.elapsed() < std::time::Duration::from_secs(3), "the miss took {:?}", started.elapsed());
++        s.abort();
++    }
++
++    #[tokio::test]
++    async fn a_job_without_a_slot_fails_fast() {
++        // One slot, held by Q's stream; R gets none in time and is a miss.
++        let fx = make_ref_fixture(false).await;
++        let (upstream, _, r_gets) = fx.upstream((3000, 0)).await;
++        let mut cfg = fx.settings(vec![upstream], 1);
++        cfg.miss_slot_wait_secs = 1;
++        let cfg = web::Data::new(cfg);
++        let (registry, metrics) = registry(1);
++        let q = {
++            let (registry, metrics, cfg, path) = (registry.clone(), metrics.clone(), cfg.clone(), fx.q.clone());
++            tokio::spawn(async move { fetch(&registry, &metrics, &cfg, &path).await })
++        };
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        let started = std::time::Instant::now();
++        let r = tokio::time::timeout(
++            std::time::Duration::from_secs(4),
++            registry.attach(cfg.clone(), metrics.clone(), &RefFixture::hash_of(&fx.r)),
++        )
++        .await
++        .expect("R waited for a slot past miss_slot_wait_secs");
++        match r {
++            Attach::Parked(done) => assert_eq!(*done.borrow(), JobState::Failed, "R's job did not fail"),
++            Attach::Live(_) => panic!("R got a stream although no slot was free"),
++        }
++        let waited = started.elapsed();
++        assert!(
++            waited >= std::time::Duration::from_millis(900) && waited < std::time::Duration::from_secs(3),
++            "R failed after {waited:?}, not after the 1 s slot wait"
++        );
++        q.await.unwrap();
++        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
++        assert_eq!(r_gets.load(Ordering::SeqCst), 0, "R's NAR was fetched for a failed job");
++    }
++
++    #[tokio::test]
++    async fn a_refused_upstream_is_asked_again() {
++        // A refused connection costs no time, so unlike a timeout it takes no upstream
++        // out: an upstream back from a restart serves the next miss.
++        let fx = make_ref_fixture(false).await;
++        let port = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
++        let (second, _) = fx.serve(&[(fx.q.as_str(), 0), (fx.r.as_str(), 0)]).await;
++        let cfg = web::Data::new(fx.settings(vec![format!("http://127.0.0.1:{port}"), second], 8));
++        let (registry, metrics) = registry(8);
++        fetch(&registry, &metrics, &cfg, &fx.q).await;
++        let (_, first) = fx
++            .serve_at(&format!("127.0.0.1:{port}"), &[(fx.q.as_str(), 0), (fx.r.as_str(), 0)])
++            .await;
++        fetch(&registry, &metrics, &cfg, &fx.r).await;
++        assert_eq!(
++            first[1].gets.load(Ordering::SeqCst),
++            1,
++            "the first upstream was skipped after it refused a connection"
++        );
++    }
++
++    #[tokio::test]
++    async fn a_down_upstream_is_skipped() {
++        let fx = make_ref_fixture(false).await;
++        let (silent, silent_hits) = spawn_silent_upstream().await;
++        let (upstream, _, r_gets) = fx.upstream((0, 0)).await;
++        let mut cfg = fx.settings(vec![silent, upstream], 8);
++        cfg.miss_read_timeout_secs = 1;
++        let cfg = web::Data::new(cfg);
++        let (registry, metrics) = registry(8);
++        // The first miss waits out the silent upstream's read timeout.
++        fetch(&registry, &metrics, &cfg, &fx.q).await;
++        assert_eq!(silent_hits.load(Ordering::SeqCst), 1);
++        let started = std::time::Instant::now();
++        fetch(&registry, &metrics, &cfg, &fx.r).await;
++        let took = started.elapsed();
++        assert_eq!(silent_hits.load(Ordering::SeqCst), 1, "the down upstream was asked again");
++        assert!(took < std::time::Duration::from_secs(1), "the second miss took {took:?}");
++        assert_eq!(r_gets.load(Ordering::SeqCst), 1, "R's NAR didn't come from the second upstream");
++    }
+ }
+diff --git a/harmonia-cache/src/narinfo.rs b/harmonia-cache/src/narinfo.rs
+index 203595f..9512bc2 100644
+--- a/harmonia-cache/src/narinfo.rs
++++ b/harmonia-cache/src/narinfo.rs
+@@ -219,18 +219,14 @@ pub(crate) async fn get(
+             if settings.substitute_on_miss {
+                 let up = match cache.get(&hash) {
+                     Some(up) => up,
+-                    None => match crate::upstream::get_text(
+-                        &settings.miss_upstream_url,
+-                        &format!("/{hash}.narinfo"),
+-                    )
+-                    .await
+-                    {
+-                        Ok(Some(text)) => {
++                    None => match crate::upstream::first_narinfo(&settings, &hash).await {
++                        Some((upstream, text)) => {
+                             match crate::upstream_narinfo::parse_upstream_narinfo(
+                                 settings.store.store_dir(),
+                                 &text,
+                             ) {
+-                                Ok(u) => {
++                                Ok(mut u) => {
++                                    u.upstream = upstream;
+                                     let a = std::sync::Arc::new(u);
+                                     cache.insert(hash.clone(), a.clone());
+                                     a
+@@ -246,22 +242,12 @@ pub(crate) async fn get(
+                                 }
+                             }
+                         }
+-                        // Clean upstream miss: the path isn't on the upstream
+-                        // either. Expected; keep it quiet (debug only).
+-                        Ok(None) => {
++                        // No upstream has it. Expected; keep it quiet (debug
++                        // only); first_narinfo logged any real fetch failure.
++                        None => {
+                             tracing::debug!(
+                                 hash = %hash,
+-                                "substitute-on-miss: upstream has no narinfo (404)"
+-                            );
+-                            return Ok(not_found_missed_hash());
+-                        }
+-                        // Real fetch failure (connection/TLS/5xx). This is the
+-                        // line that would have named the network-sandbox block
+-                        // outright instead of a silent 404.
+-                        Err(e) => {
+-                            tracing::warn!(
+-                                hash = %hash,
+-                                "substitute-on-miss: upstream narinfo fetch failed: {e}"
++                                "substitute-on-miss: no upstream has the narinfo"
+                             );
+                             return Ok(not_found_missed_hash());
+                         }
+diff --git a/harmonia-cache/src/upstream.rs b/harmonia-cache/src/upstream.rs
+index a5b524b..63bcbe7 100644
+--- a/harmonia-cache/src/upstream.rs
++++ b/harmonia-cache/src/upstream.rs
+@@ -1,13 +1,14 @@
+ //! Upstream binary-cache HTTP client (reqwest, rustls). One-shot narinfo GET
+-//! and a streaming NAR body reader for the stream-through cache.
+-
+-use std::sync::LazyLock;
++//! and a streaming NAR body reader for the stream-through cache. The client is
++//! the config's (`Config::upstream_client`), which carries the connect and read
++//! timeouts. An upstream that doesn't connect or answer in time is skipped for
++//! `miss_upstream_retry_secs`, so a saturated link costs one timeout, not one
++//! per path. A failure that costs no time (a refused connection) skips nothing.
+ 
+ use futures_util::StreamExt as _;
+ use tokio_util::io::StreamReader;
+ 
+-static CLIENT: LazyLock<reqwest::Client> =
+-    LazyLock::new(|| reqwest::Client::builder().build().expect("reqwest client"));
++use crate::config::Config;
+ 
+ fn url(upstream: &str, path: &str) -> String {
+     format!("{}/{}", upstream.trim_end_matches('/'), path.trim_start_matches('/'))
+@@ -16,34 +17,81 @@ fn url(upstream: &str, path: &str) -> String {
+ /// Fetch an upstream narinfo. `Ok(Some(body))` on 200; `Ok(None)` on 404 (a
+ /// clean upstream miss — the upstream simply doesn't have this path, which is
+ /// normal and not an error); `Err` on any real failure (connection, TLS, 5xx,
+-/// malformed body), so callers can log those loudly without flooding the log
+-/// on every ordinary miss.
+-pub(crate) async fn get_text(upstream: &str, path: &str) -> Result<Option<String>, String> {
+-    let resp = CLIENT
+-        .get(url(upstream, path))
+-        .send()
+-        .await
+-        .map_err(|e| format!("upstream GET: {e}"))?;
++/// timeout, malformed body), so callers can log those loudly without flooding
++/// the log on every ordinary miss.
++pub(crate) async fn get_text(
++    cfg: &Config,
++    upstream: &str,
++    path: &str,
++) -> Result<Option<String>, String> {
++    let resp = send(cfg, upstream, path).await?;
+     if resp.status() == reqwest::StatusCode::NOT_FOUND {
+         return Ok(None);
+     }
+-    resp.error_for_status()
+-        .map_err(|e| format!("upstream status: {e}"))?
+-        .text()
++    let resp = resp
++        .error_for_status()
++        .map_err(|e| format!("upstream status: {e}"))?;
++    match resp.text().await {
++        Ok(text) => Ok(Some(text)),
++        Err(e) => {
++            timed_out(cfg, upstream, &e);
++            Err(format!("upstream body: {e}"))
++        }
++    }
++}
++
++/// An upstream that timed out is down.
++fn timed_out(cfg: &Config, upstream: &str, e: &reqwest::Error) {
++    if e.is_timeout() {
++        cfg.mark_upstream_down(upstream);
++    }
++}
++
++/// GET `path` from `upstream`, unless it is down; a connect or read timeout marks
++/// it down.
++async fn send(cfg: &Config, upstream: &str, path: &str) -> Result<reqwest::Response, String> {
++    if cfg.upstream_down(upstream) {
++        return Err("upstream down, skipped".to_string());
++    }
++    cfg.upstream_client()
++        .get(url(upstream, path))
++        .send()
+         .await
+-        .map(Some)
+-        .map_err(|e| format!("upstream body: {e}"))
++        .map_err(|e| {
++            timed_out(cfg, upstream, &e);
++            format!("upstream GET: {e}")
++        })
++}
++
++/// The first upstream, in order, that has `<hash>.narinfo`: its base URL and the
++/// narinfo text. A 404 moves on quietly; a failure (a timeout included) is logged
++/// and moves on too, so a broken upstream never hides a path the next one has.
++/// An upstream that is down is skipped without a request. `None` when none has it.
++pub(crate) async fn first_narinfo(cfg: &Config, hash: &str) -> Option<(String, String)> {
++    for upstream in &cfg.miss_upstream_urls {
++        if cfg.upstream_down(upstream) {
++            continue;
++        }
++        match get_text(cfg, upstream, &format!("/{hash}.narinfo")).await {
++            Ok(Some(text)) => return Some((upstream.clone(), text)),
++            Ok(None) => {}
++            Err(e) => tracing::warn!(
++                hash = %hash,
++                upstream = %upstream,
++                "substitute-on-miss: upstream narinfo fetch failed: {e}"
++            ),
++        }
++    }
++    None
+ }
+ 
+ pub(crate) async fn get_stream(
++    cfg: &Config,
+     upstream: &str,
+     path: &str,
+ ) -> Result<impl tokio::io::AsyncBufRead + Unpin + Send, String> {
+-    let resp = CLIENT
+-        .get(url(upstream, path))
+-        .send()
+-        .await
+-        .map_err(|e| format!("upstream GET: {e}"))?
++    let resp = send(cfg, upstream, path)
++        .await?
+         .error_for_status()
+         .map_err(|e| format!("upstream status: {e}"))?;
+     let stream = resp
+diff --git a/harmonia-cache/src/upstream_narinfo.rs b/harmonia-cache/src/upstream_narinfo.rs
+index 68e5058..99308a9 100644
+--- a/harmonia-cache/src/upstream_narinfo.rs
++++ b/harmonia-cache/src/upstream_narinfo.rs
+@@ -20,6 +20,7 @@ pub(crate) struct UpstreamNarInfo {
+     pub nar_hash_bare: String,   // NAR hash, bare base32 (no "sha256:")
+     pub nar_url: String,         // upstream "nar/<filehash>.nar.{xz,zst,...}"
+     pub upstream_compression: String, // how the upstream NAR is compressed
++    pub upstream: String,        // base URL of the upstream that served it
+     pub client_narinfo: String,  // rewritten text served to clients
+     pub info: ValidPathInfo,     // for add_to_store_nar
+ }
+@@ -148,6 +149,7 @@ pub(crate) fn parse_upstream_narinfo(
+         nar_hash_bare,
+         nar_url: url,
+         upstream_compression,
++        upstream: String::new(),
+         client_narinfo: out,
+         info,
+     })

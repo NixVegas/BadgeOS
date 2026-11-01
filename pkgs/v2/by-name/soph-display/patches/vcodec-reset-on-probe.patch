@@ -1,0 +1,65 @@
+vcodec: pulse the codec island's resets as the driver probes
+
+A warm reboot leaves the codec island wedged: the next modprobe of the codec
+stack hangs or the VPU times out. The cure was soph-codec-reset, which pulsed
+SW_RSTN_0 bits 3-5 through /dev/mem before the modules loaded. That needs
+/dev/mem to reach a register the reset-simple driver has claimed, which
+IO_STRICT_DEVMEM refuses.
+
+The SoC's reset controller is in the device tree (reset-simple, active low),
+so the vcodec node carries the three resets and vpu_probe() asserts them,
+holds them 100 ms and releases them before cviGetRegResource() and
+cviConfigDDR(), the first codec register access. That is the pulse
+soph-codec-reset gave, at the same point. cvi_vc_driver imports this module's
+symbols, so it is never loaded while this probes; cv181x_jpeg's probe touches
+no register. A node without resets probes as before.
+
+--- a/interdrv/vcodec/cvi_vcodec.c
++++ b/interdrv/vcodec/cvi_vcodec.c
+@@ -1209,6 +1209,35 @@
+ };
+ #endif
+ 
++/*
++ * The codec island does not survive a warm reboot. Pulsing the node's resets
++ * (RST_H264C, RST_JPEG, RST_H265C) before the first codec register access gives
++ * it what a cold boot does. cvi_vc_driver needs this module, so it is never
++ * loaded while this probes.
++ */
++static int cvi_vcodec_reset_island(struct device *dev)
++{
++	struct reset_control *rst;
++	int ret;
++
++	rst = devm_reset_control_array_get_optional_exclusive(dev);
++	if (IS_ERR(rst))
++		return dev_err_probe(dev, PTR_ERR(rst), "cannot get the codec resets\n");
++	if (!rst)
++		return 0;
++
++	ret = reset_control_assert(rst);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot assert the codec resets\n");
++	msleep(100);
++	ret = reset_control_deassert(rst);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot release the codec resets\n");
++
++	dev_info(dev, "codec island reset\n");
++	return 0;
++}
++
+ static int vpu_probe(struct platform_device *pdev)
+ {
+ 	int err = 0;
+@@ -1216,6 +1245,10 @@
+ 	struct device *dev = &pdev->dev;
+ 	struct cvi_vpu_device *vdev;
+ 
++	err = cvi_vcodec_reset_island(dev);
++	if (err)
++		return err;
++
+ 	vdev = devm_kzalloc(&pdev->dev, sizeof(*vdev), GFP_KERNEL);
+ 	if (!vdev)
+ 		return -ENOMEM;

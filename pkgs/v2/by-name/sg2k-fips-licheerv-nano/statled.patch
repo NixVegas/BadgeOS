@@ -1,0 +1,76 @@
+--- a/board/cvitek/cv181x/board.c
++++ b/board/cvitek/cv181x/board.c
+@@ -395,34 +395,30 @@
+  *   statled_toggle()   flip the line, called from the poll loop
+  *   statled_end()      put direction and mux back
+  *
+- * The pad: STAT is XGPIOA_29 on the IIC0_SDA pad:
+- *
+- *   IIC0_SDA__CV_SDA0__CR_4WTDO  0    <- i2c0 SDA and C906 4-wire JTAG TDO
+- *   IIC0_SDA__XGPIOA_29          3    <- what we want, for the countdown only
+- *
+- * so lighting the LED takes the pad off JTAG TDO; begin saves the mux and end
+- * restores it, so the borrow lasts only the countdown. The saved value can live
+- * in a file-scope variable because begin and end both run in the main loop,
+- * after relocation, so nothing must survive the image copy.
++ * The pad: on the LicheeRV Nano STAT is the user LED, XGPIOA_14 on the SD0_PWR_EN
++ * pad, function 3. begin saves the mux and end restores it, so the borrow lasts
++ * only the countdown. The saved value can live in a file-scope variable because
++ * begin and end both run in the main loop, after relocation, so nothing must
++ * survive the image copy.
+  *
+  *   XGPIOA        0x03020000   (+0x00 DR data, +0x04 DDR direction 1=out)
+- *   STAT bit      29
+- *   IIC0_SDA mux  0x03001074   (PINMUX_BASE 0x03001000 + FUNCSEL_IIC0_SDA 0x74)
+- *                              low 3 bits: 0 = i2c0/JTAG TDO, 3 = XGPIOA_29
++ *   STAT bit      14
++ *   SD0_PWR_EN mux 0x03001038  (PINMUX_BASE 0x03001000 + FUNCSEL_SD0_PWR_EN 0x38)
++ *                              low 3 bits: 3 = XGPIOA_14
+  *
+  * Polarity is not assumed: the line is toggled, so it blinks whether the LED is
+  * wired active-high or active-low.
+  */
+ 
+ #define STATLED_PINMUX_BASE	0x03001000UL
+-#define STATLED_IIC0_SDA_FUNCSEL (STATLED_PINMUX_BASE + 0x74)
++#define STATLED_SD0_PWR_EN_FUNCSEL (STATLED_PINMUX_BASE + 0x38)
+ #define STATLED_FUNCSEL_MASK	0x7
+-#define STATLED_FUNC_XGPIOA_29	0x3
++#define STATLED_FUNC_XGPIOA_14	0x3
+ 
+ #define STATLED_XGPIOA_BASE	0x03020000UL
+ #define STATLED_XGPIOA_DR	(STATLED_XGPIOA_BASE + 0x00)
+ #define STATLED_XGPIOA_DDR	(STATLED_XGPIOA_BASE + 0x04)
+-#define STATLED_BIT		29
++#define STATLED_BIT		14
+ 
+ static uint32_t statled_saved_mux;
+ static uint32_t statled_saved_ddr;
+@@ -435,10 +431,10 @@
+ 	if (statled_active)
+ 		return;
+ 
+-	statled_saved_mux = mmio_read_32(STATLED_IIC0_SDA_FUNCSEL);
+-	mmio_write_32(STATLED_IIC0_SDA_FUNCSEL,
++	statled_saved_mux = mmio_read_32(STATLED_SD0_PWR_EN_FUNCSEL);
++	mmio_write_32(STATLED_SD0_PWR_EN_FUNCSEL,
+ 		      (statled_saved_mux & ~STATLED_FUNCSEL_MASK) |
+-		      STATLED_FUNC_XGPIOA_29);
++		      STATLED_FUNC_XGPIOA_14);
+ 
+ 	/* Drive just our bit; every other XGPIOA line is left as found. */
+ 	ddr = mmio_read_32(STATLED_XGPIOA_DDR);
+@@ -464,10 +460,10 @@
+ 	if (!statled_active)
+ 		return;
+ 
+-	/* Direction first, so the line is not left driven while it becomes a
+-	 * JTAG pin again. */
++	/* Direction first, so the line is not left driven while the pad changes
++	 * function. */
+ 	mmio_write_32(STATLED_XGPIOA_DDR, statled_saved_ddr);
+-	mmio_write_32(STATLED_IIC0_SDA_FUNCSEL, statled_saved_mux);
++	mmio_write_32(STATLED_SD0_PWR_EN_FUNCSEL, statled_saved_mux);
+ 
+ 	statled_active = 0;
+ }

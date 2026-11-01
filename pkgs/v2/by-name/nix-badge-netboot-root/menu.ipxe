@@ -1,0 +1,8 @@
+:intro
+echo
+prompt --timeout 5000 Press any key to play Bad Apple, or wait to boot NixOS... || goto boot
+chain badapple.ipxe || goto boot
+:boot
+echo
+echo Booting NixOS...
+chain netboot.ipxe

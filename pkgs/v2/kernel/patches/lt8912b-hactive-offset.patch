@@ -1,0 +1,109 @@
+lontium-lt8912b: hactive_offset + force_720p params, and the badge's TMDS drive
+
+hactive_offset (bench-swept) corrects a ~1px/row shear on some DSI
+sources. force_720p makes the bridge ignore the DRM mode and program a
+fixed 1280x720p60 line: the SG2000 badge's soph_drm presents a 640x360
+mode (so the compositor renders small and the DISP GOP upscales 2x into
+the real 720p raster) while the bridge must still be driven at 720p.
+Both are mode 0644 so they can be found/toggled at runtime.
+
+Also sets the Tx-analog output drive to a1/a1/03 instead of upstream's
+b1/b1/0e. The badge's HDMI sink is not exactly impedance matched, so the
+upstream drive leaves no margin: a direct link streaks, shows a stretched
+picture, and replugs as "unsupported" until a repeater cleans it up. This
+is the same empirical fix the vendor VDEC path uses (lt-land1281.sh); it
+is a property of the board, so it applies to every badge. Without it the
+desktop/Sway HDMI path has the marginal link the vendor path already fixed.
+
+Signed-off-by: badgeos
+---
+--- a/drivers/gpu/drm/bridge/lontium-lt8912b.c
++++ b/drivers/gpu/drm/bridge/lontium-lt8912b.c
+@@ -59,10 +59,20 @@
+ 		{0x0c, 0xff},
+ 		{0x42, 0x04},
+ 
+-		/*Tx Analog*/
+-		{0x31, 0xb1},
+-		{0x32, 0xb1},
+-		{0x33, 0x0e},
++		/*
++		 * Tx Analog. Upstream drives 0x31/0x32/0x33 = b1/b1/0e; the
++		 * NixVegas badge needs a1/a1/03 (more TMDS output drive). Its
++		 * HDMI sink is not exactly impedance matched, so the upstream
++		 * setting leaves no margin and the direct link streaks / shows a
++		 * vertically-stretched picture / replugs as "unsupported" until a
++		 * repeater (a retimer) cleans it up. a1/a1/03 fixes it outright.
++		 * Empirical, verified on badge #1; the same value the vendor VDEC
++		 * path uses in lt-land1281.sh. A property of the board, so it holds
++		 * for every badge -- do not revert toward upstream.
++		 */
++		{0x31, 0xa1},
++		{0x32, 0xa1},
++		{0x33, 0x03},
+ 		{0x37, 0x00},
+ 		{0x38, 0x22},
+ 		{0x60, 0x82},
+@@ -280,6 +290,35 @@
+ 	lt->is_power_on = false;
+ }
+ 
++/*
++ * Some DSI sources land the bridge's line-recovery half a pixel off, which
++ * shears the picture by roughly a pixel per row. Adding a small offset to the
++ * active-width register the bridge is programmed with (0x1c/0x1d on the
++ * CEC/DSI bank), while leaving h_total alone, realigns it. Default 0 keeps
++ * upstream behaviour; the NixVegas badge (SG2000 -> LT8912B, 2 lanes) needs 1.
++ * Writable at runtime (/sys/module/lontium_lt8912b/parameters/hactive_offset)
++ * so the alignment can be found on the bench.
++ */
++static int hactive_offset;
++module_param(hactive_offset, int, 0644);
++MODULE_PARM_DESC(hactive_offset,
++		 "pixels added to the bridge active-width register (timing-alignment quirk; 0 = upstream)");
++
++/*
++ * Drive the bridge at a fixed 1280x720p60 regardless of the DRM mode. The
++ * SG2000 badge's soph_drm presents a 640x360 mode so the compositor renders
++ * small and the DISP GOP hardware-upscales 2x into the real 720p raster it
++ * actually emits over DSI; the bridge must be programmed for that 720p line,
++ * not for the 640x360 the CRTC advertises. When set, lt8912_video_setup uses
++ * the CEA-861 720p60 timings (sync polarity still comes from the mode, which
++ * soph_drm drives identically on its native 1280x720 path that already locks).
++ * Default 0 = upstream (use the DRM mode). Writable at runtime.
++ */
++static int force_720p;
++module_param(force_720p, int, 0644);
++MODULE_PARM_DESC(force_720p,
++		 "ignore the DRM mode and program the bridge for fixed 1280x720p60 (0 = use the mode)");
++
+ static int lt8912_video_setup(struct lt8912 *lt)
+ {
+ 	u32 hactive, h_total, hpw, hfp, hbp;
+@@ -304,6 +343,13 @@
+ 	v_total = vactive + vfp + vpw + vbp;
+ 	vsync_activehigh = lt->mode.flags & DISPLAY_FLAGS_VSYNC_HIGH;
+ 
++	if (force_720p) {
++		hactive = 1280; hfp = 110; hpw = 40; hbp = 220;
++		h_total = hactive + hfp + hpw + hbp;	/* 1650 */
++		vactive = 720;  vfp = 5;   vpw = 5;   vbp = 20;
++		v_total = vactive + vfp + vpw + vbp;	/* 750 */
++	}
++
+ 	if (vactive <= 600)
+ 		settle = 0x04;
+ 	else if (vactive == 1080)
+@@ -313,8 +359,10 @@
+ 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x11, settle);
+ 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x18, hpw);
+ 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x19, vpw);
+-	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x1c, hactive & 0xff);
+-	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x1d, hactive >> 8);
++	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x1c,
++			    (hactive + hactive_offset) & 0xff);
++	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x1d,
++			    (hactive + hactive_offset) >> 8);
+ 
+ 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x2f, 0x0c);
+ 

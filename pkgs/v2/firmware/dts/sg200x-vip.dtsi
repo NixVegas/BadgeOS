@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * SG200x vendor display and codec blocks (the cvitek VIP stack) and the RTC-domain
+ * GPIO bank, for any board with a display. Adds children to the SoC's /soc node.
+ */
+
+/*
+ * RTC/PWR-domain GPIO controller (RTCSYS_GPIO, 0x05021000), a plain DesignWare APB
+ * GPIO that is live out of reset. The USER button is on it (PWR_GPIO1/2, via the
+ * reused LCD_RST net). Linux 7.3 declares the bank too; ours adds the line names.
+ */
+/* The base dtsi's `soc` node is unlabeled, so merge by path (dtc unions same-path
+ * nodes) to add the RTC gpio under the existing simple-bus (which has ranges;). */
+/ {
+	soc {
+		rtcsys_gpio: gpio@5021000 {
+			compatible = "snps,dw-apb-gpio";
+			reg = <0x05021000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			porte: gpio-controller@0 {
+				compatible = "snps,dw-apb-gpio-port";
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <32>;
+				reg = <0>;
+				/* Line 2 is the S3 USER button (PWR_GPIO domain), found by
+				 * probing which RTC line flips on a press: active-low, rests
+				 * high, pressed pulls low. This controller has no edge IRQ, so
+				 * nix-badge level-polls it (see sysfs.Button.openPolled).
+				 * Naming through line 2 is enough; the rest stay unnamed. */
+				gpio-line-names = "", "", "user-btn";
+			};
+		};
+	};
+};
+
+/*
+ * Sophgo/Cvitek VIP display stack.
+ *
+ * The vendor 5.10 drivers, forward-ported in pkgs/video/soph-display, are
+ * platform drivers that bind by compatible, so without these nodes the modules
+ * load but never probe and no /dev or /proc/cvitek entries appear.
+ *
+ * Addresses and reg-names are taken verbatim from the vendor
+ * cv181x_base.dtsi. The clocks are not: the vendor references its own
+ * CV181X_CLK_* indices, and these use the mainline sophgo,sg2000-clk
+ * equivalents, which happen to cover every clock the stack needs
+ * (CLK_DISP_VIP, CLK_DSI_MAC_VIP, CLK_BT_VIP, the SC/IMG blocks and the four
+ * VIP_SYS sources).
+ *
+ * The panel reset/pwm/power GPIOs the vendor lists on mipi_tx and vo are
+ * deliberately omitted. They are PWR_GPIO lines, and letting the vendor claim
+ * them re-muxes the IIC2 pads away from I2C, which is what stops the LT8912B
+ * bridge from ACKing. The soph-display gpio compat header also declines them
+ * at the driver level; leaving them out of the DT too means nothing to fight
+ * over. The bridge is driven over i2c2 instead.
+ */
+/ {
+	soc {
+		cvi_sys: cvi_sys {
+			compatible = "cvitek,sys";
+		};
+
+		cvi_base: cvi_base {
+			compatible = "cvitek,base";
+			reg = <0x0a0c8000 0x20>;
+			reg-names = "vip_sys";
+		};
+
+		cvi_vpss: cvi_vpss {
+			compatible = "cvitek,vpss";
+			reg = <0x0a080000 0x10000>, <0x0a0d1000 0x100>;
+			reg-names = "sc";
+			clocks = <&clk CLK_SRC_VIP_SYS_0>, <&clk CLK_SRC_VIP_SYS_1>,
+				 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_IMG_D_VIP>,
+				 <&clk CLK_IMG_V_VIP>, <&clk CLK_SC_TOP_VIP>,
+				 <&clk CLK_SC_D_VIP>, <&clk CLK_SC_V1_VIP>,
+				 <&clk CLK_SC_V2_VIP>, <&clk CLK_SC_V3_VIP>;
+			clock-names = "clk_sys_0", "clk_sys_1",
+				      "clk_sys_2", "clk_img_d",
+				      "clk_img_v", "clk_sc_top",
+				      "clk_sc_d", "clk_sc_v1",
+				      "clk_sc_v2", "clk_sc_v3";
+			clock-freq-vip-sys1 = <300000000>;
+		};
+
+		cvi_vo: cvi_vo {
+			compatible = "cvitek,vo";
+			reg = <0x0a080000 0x10000>, <0x0a0c8000 0xa0>, <0x0a0d1000 0x100>;
+			reg-names = "sc", "vip_sys", "dphy";
+			clocks = <&clk CLK_DISP_VIP>, <&clk CLK_DSI_MAC_VIP>, <&clk CLK_BT_VIP>;
+			clock-names = "clk_disp", "clk_dsi", "clk_bt";
+		};
+
+		cvi_mipi_tx: cvi_mipi_tx {
+			compatible = "cvitek,mipi_tx";
+			clocks = <&clk CLK_DISP_VIP>, <&clk CLK_DSI_MAC_VIP>;
+			clock-names = "clk_disp", "clk_dsi";
+		};
+
+		cvi_rgn: cvi_rgn {
+			compatible = "cvitek,rgn";
+		};
+
+		/*
+		 * Video codec block (the H.264 path). Three separate
+		 * platform drivers share one register island at 0x0b000000:
+		 * cv181x_vcodec binds "cvitek,asic-vcodec", cv181x_jpeg binds
+		 * "cvitek,asic-jpeg", and cvi_vc_driver binds
+		 * "cvitek,cvi_vc_drv" and is the one that actually creates the
+		 * /dev/cvi-venc* and /dev/cvi-vdec* character devices.
+		 *
+		 * Without these nodes the modules load and cvi_vc_drv_init even
+		 * reports "result = 0x0", but that is only
+		 * platform_driver_register() succeeding. The class_create() /
+		 * cdev_add() / device_create() calls live in .probe, which never
+		 * runs with no matching device, so CVI_VDEC_* has nothing to
+		 * open and a VDEC -> VO bind silently degrades to "no channel".
+		 *
+		 * vc_ctrl/vc_sbm/vc_addr_remap are deliberately listed on all
+		 * three nodes, exactly as the vendor cv181x_base.dtsi does,
+		 * each driver ioremaps them independently.
+		 */
+		vcodec: vcodec {
+			compatible = "cvitek,asic-vcodec";
+			/* Disabled here; each core enables it. Present-but-enabled is
+			 * not free: a matching node is what makes udev autoload and
+			 * probe cvi_vc_driver at boot, and on a stale VPU that hangs
+			 * the bus. Only arm has been verified end to end. */
+			status = "disabled";
+			reg = <0x0b020000 0x10000>, <0x0b010000 0x10000>,
+			      <0x0b030000 0x100>, <0x0b058000 0x100>,
+			      <0x0b050000 0x400>;
+			reg-names = "h265", "h264", "vc_ctrl", "vc_sbm",
+				    "vc_addr_remap";
+			/* The whole island's resets: a warm reboot leaves it hung, and
+			 * cv181x_vcodec, which cvi_vc_driver needs, pulses them as it
+			 * probes, before any codec register access. jpu's is here too,
+			 * as the island's shared registers belong to no one block. */
+			resets = <&rst RST_H264C>, <&rst RST_JPEG>, <&rst RST_H265C>;
+			reset-names = "h264c", "jpeg", "h265c";
+			clocks = <&clk CLK_AXI_VIDEO_CODEC>,
+				 <&clk CLK_H264C>, <&clk CLK_APB_H264C>,
+				 <&clk CLK_H265C>, <&clk CLK_APB_H265C>,
+				 <&clk CLK_VC_SRC0>, <&clk CLK_VC_SRC1>,
+				 <&clk CLK_VC_SRC2>, <&clk CLK_CFG_REG_VC>;
+			clock-names = "clk_axi_video_codec",
+				      "clk_h264c", "clk_apb_h264c",
+				      "clk_h265c", "clk_apb_h265c",
+				      "clk_vc_src0", "clk_vc_src1",
+				      "clk_vc_src2", "clk_cfg_reg_vc";
+		};
+
+		jpu: jpu {
+			compatible = "cvitek,asic-jpeg";
+			/* Disabled here; each core enables it. Present-but-enabled is
+			 * not free: a matching node is what makes udev autoload and
+			 * probe cvi_vc_driver at boot, and on a stale VPU that hangs
+			 * the bus. Only arm has been verified end to end. */
+			status = "disabled";
+			reg = <0x0b000000 0x300>, <0x0b030000 0x100>,
+			      <0x0b058000 0x100>;
+			reg-names = "jpeg", "vc_ctrl", "vc_sbm";
+			clocks = <&clk CLK_AXI_VIDEO_CODEC>,
+				 <&clk CLK_JPEG>, <&clk CLK_APB_JPEG>,
+				 <&clk CLK_VC_SRC0>, <&clk CLK_VC_SRC1>,
+				 <&clk CLK_VC_SRC2>, <&clk CLK_CFG_REG_VC>;
+			clock-names = "clk_axi_video_codec",
+				      "clk_jpeg", "clk_apb_jpeg",
+				      "clk_vc_src0", "clk_vc_src1",
+				      "clk_vc_src2", "clk_cfg_reg_vc";
+		};
+
+		cvi_vc_drv: cvi_vc_drv {
+			compatible = "cvitek,cvi_vc_drv";
+			/* Disabled here; each core enables it. Present-but-enabled is
+			 * not free: a matching node is what makes udev autoload and
+			 * probe cvi_vc_driver at boot, and on a stale VPU that hangs
+			 * the bus. Only arm has been verified end to end. */
+			status = "disabled";
+			reg = <0x0b030000 0x100>, <0x0b058000 0x100>,
+			      <0x0b050000 0x400>;
+			reg-names = "vc_ctrl", "vc_sbm", "vc_addr_remap";
+		};
+	};
+};

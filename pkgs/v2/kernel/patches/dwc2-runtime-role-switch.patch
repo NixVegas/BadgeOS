@@ -1,0 +1,386 @@
+usb: dwc2: add a manual, interrupt-masked host<->device role knob
+
+The NixVegas badge (Milk-V Duo S / Sophgo SG2000) wires USB_VBUS_DET (the
+dwc2 PHY VBUS sense input) to sense the badge's OWN USB_VBUS_EN output --
+a self-referential VBUS. dwc2's OTG state machine therefore sees the VBUS
+transitions it itself caused, re-evaluates the connector ID / session, and
+oscillates host<->device forever; kworker/u4 (the dwc2 OTG work,
+dwc2_conn_id_status_change) pins and soft-locks CPU#0. Bench-proven three
+times. The only stable stock configs are the fixed roles dr_mode="host"
+and dr_mode="peripheral", neither of which can be changed at runtime
+(dr_mode is read once by dwc2_get_dr_mode() at probe), and the usual
+runtime mechanism -- usb-role-switch on &usb -> dwc2_drd_init() ->
+dwc2_ovr_init() -> dwc2_force_mode() -- hangs this SoC in probe
+(usb_add_gadget_udc() after dwc2_hcd_init() never returns; see the
+armbian 0041 "put the USB port in host mode" patch for that write-up).
+
+This adds a manual role switch that keeps BOTH controllers initialised
+(as dr_mode="otg" does) but never lets the OTG state machine run:
+
+  1. A new opt-in DT property "snps,manual-role-switch" sets
+     hsotg->manual_role. When set, dwc2_enable_common_interrupts() keeps
+     every OTG-state-machine source OUT of GINTMSK -- OTGINT (the GOTGINT
+     aggregate), CONIDSTSCHNG (connector-ID change) and SESSREQINT
+     (session request) -- so the connector-ID interrupt that a forced
+     mode change raises never schedules dwc2_conn_id_status_change and the
+     machine stays inert. dwc2_core_init() re-runs
+     dwc2_enable_common_interrupts() on every switch, so the mask has to
+     be reasserted there, not once at probe.
+
+  2. A sysfs attribute "dwc2_role" on the platform device
+     (/sys/devices/.../4340000.usb/dwc2_role) drives the switch by hand:
+     "echo host" / "echo device". It does exactly what the OTG worker's
+     two branches do, minus the worker: program a FIXED GOTGCTL
+     session-valid override (A-valid for host, B-valid for device, plus
+     VBUS-valid and the debounce-filter bypass) so the core ignores the
+     oscillating USB_VBUS_DET entirely, dwc2_force_mode() into the fixed
+     role, re-mask the OTG IRQs (belt-and-braces after dwc2_core_init),
+     then start/stop the host controller or the gadget.
+
+  3. VBUS_EN follows the role. usb_vbus is the gpio fixed regulator on
+     portb 5 (USB_VBUS_EN); with vbus-supply=<&usb_vbus> on &usb it is
+     dwc2's hsotg->vbus_supply. Host start reaches dwc2_vbus_supply_init()
+     (regulator_enable -> VBUS_EN high; the badge sources 5V and is the
+     host) through dwc2_hcd_start()->start_work->dwc2_host_start()->
+     _dwc2_hcd_start(); the device switch calls dwc2_vbus_supply_exit()
+     (regulator_disable -> VBUS_EN low) up front, so the badge stops
+     sourcing before it becomes a peripheral and only an external host's
+     VBUS is present.
+
+This is deliberately NOT wired to usb-role-switch: the class registration
+is the thing that hangs probe on this SoC, and its conn-id override path
+is the thing that flaps. The knob is the manual, IRQ-masked equivalent.
+
+Companion DT change (in our own board DTS, both arches):
+
+    &usb {
+    -   dr_mode = "peripheral";
+    +   dr_mode = "otg";
+    +   vbus-supply = <&usb_vbus>;
+    +   snps,manual-role-switch;
+        status = "okay";
+    };
+
+dr_mode="otg" is required, not cosmetic: it is what makes dwc2 initialise
+BOTH dwc2_hcd_init() and dwc2_gadget_init() at probe, which the runtime
+switch needs present. A fixed dr_mode only builds one side (host -> no
+gadget, peripheral -> no usb_hcd), so switching would mean calling
+dwc2_hcd_init()/dwc2_gadget_init() from a sysfs write -- far more
+invasive. "otg" WITHOUT usb-role-switch is the sweet spot: both
+controllers up, no drd.c, and our mask stops the SM the otg path would
+otherwise run.
+
+------------------------------------------------------------------------
+DRAFT -- verify against the pinned tree before building.
+
+Target: Linux 7.2.4 (nixpkgs 26.05 linuxPackages_latest; the badge kernel
+per modules/duo-s/base.nix, boot.kernelPackages = linuxPackages_latest).
+The dwc2 driver has been structurally stable for many releases, so the
+function names below hold, but the diff context/offsets were written
+against the current dwc2 tree (torvalds/master) and the exact surrounding
+lines in 7.2.4 must be confirmed. Flagged TODO(verify) inline:
+
+  - dwc2_enable_common_interrupts() body in core.c (the intmsk assembly
+    lines this hunk edits) -- confirm the exact context.
+  - dwc2_get_device_properties() is the params.c DT-reading site; confirm
+    the function name/where params.external_id_pin_ctl is settable.
+  - dwc2_hcd_init()/dwc2_hcd_remove() are the create/remove sites for the
+    sysfs file; confirm their tail context.
+  - dwc2_enable_acg(), dwc2_hcd_start(), dwc2_hcd_stop(),
+    dwc2_hsotg_core_init_disconnected(), dwc2_hsotg_core_connect(),
+    dwc2_hsotg_disconnect() are all called by dwc2_conn_id_status_change()
+    in this same file today, so they are in scope from hcd.c; confirm
+    signatures unchanged.
+  - dwc2_vbus_supply_init()/_exit() are static in hcd.c (so the switch
+    helper is placed in hcd.c on purpose); confirm they still take only
+    hsotg.
+
+Signed-off-by: Morgan Jones <me@numin.it>
+---
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -880,6 +880,11 @@ struct dwc2_hsotg {
+ 	struct usb_role_switch *role_sw;
+ 	enum usb_dr_mode role_sw_default_mode;
+
++	/* NixVegas badge: manual, IRQ-masked role switch (dwc2_role sysfs).
++	 * Set from the "snps,manual-role-switch" DT property. When true the
++	 * OTG state machine is kept inert (its GINTMSK sources are masked) and
++	 * the role is only ever changed by dwc2_switch_role(). */
++	bool manual_role;
++
+ 	/* DWC OTG HW Release versions */
+ #define DWC2_CORE_REV_2_71a	0x4f54271a
+ #define DWC2_CORE_REV_2_72a	0x4f54272a
+@@ -1400,6 +1405,7 @@ int dwc2_hsotg_tx_fifo_total_depth(struct dwc2_hsotg *hsotg);
+
+ void dwc2_force_mode(struct dwc2_hsotg *hsotg, bool host);
+ void dwc2_clear_force_mode(struct dwc2_hsotg *hsotg);
++int dwc2_switch_role(struct dwc2_hsotg *hsotg, bool host);
+
+ /* TODO(verify): the two anchor lines above (dwc2_force_mode /
+  * dwc2_clear_force_mode prototypes) exist in core.h; confirm the exact
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -320,17 +320,38 @@ static void dwc2_enable_common_interrupts(struct dwc2_hsotg *hsotg)
+ 	/* Clear any pending interrupts */
+ 	dwc2_writel(hsotg, 0xffffffff, GINTSTS);
+
+-	/* Enable the interrupts in the GINTMSK */
+-	intmsk = GINTSTS_MODEMIS | GINTSTS_OTGINT;
++	/* Enable the interrupts in the GINTMSK. MODEMIS is always wanted
++	 * (it is only a warning path). */
++	intmsk = GINTSTS_MODEMIS;
++
++	/*
++	 * NixVegas badge (SG2000): USB_VBUS_DET senses the badge's own
++	 * USB_VBUS_EN, so leaving the OTG-state-machine interrupts unmasked
++	 * makes dwc2 oscillate host<->device and soft-lock CPU#0. When the
++	 * dwc2_role knob owns the role (manual_role), keep every OTG SM
++	 * source out of GINTMSK: OTGINT (the GOTGINT aggregate),
++	 * CONIDSTSCHNG (connector-ID change) and SESSREQINT (session
++	 * request). dwc2_core_init() re-runs this on every forced switch, so
++	 * the mask is reasserted here rather than once at probe.
++	 */
++	if (!hsotg->manual_role)
++		intmsk |= GINTSTS_OTGINT;
+
+ 	if (!hsotg->params.host_dma)
+ 		intmsk |= GINTSTS_RXFLVL;
+-	if (!hsotg->params.external_id_pin_ctl)
++	if (!hsotg->params.external_id_pin_ctl && !hsotg->manual_role)
+ 		intmsk |= GINTSTS_CONIDSTSCHNG;
+
+-	intmsk |= GINTSTS_WKUPINT | GINTSTS_USBSUSP |
+-		  GINTSTS_SESSREQINT;
++	intmsk |= GINTSTS_WKUPINT | GINTSTS_USBSUSP;
++	if (!hsotg->manual_role)
++		intmsk |= GINTSTS_SESSREQINT;
+
+ 	if (dwc2_is_device_mode(hsotg) && hsotg->params.lpm)
+ 		intmsk |= GINTSTS_LPMTRANRCVD;
+
+ 	dwc2_writel(hsotg, intmsk, GINTMSK);
+ }
+ /*
+  * TODO(verify): the block above is the canonical dwc2_enable_common_interrupts
+  * body. Confirm the exact intmsk assembly lines in the 7.2.4 source; the guards
+  * added are (a) OTGINT only when !manual_role, (b) CONIDSTSCHNG also gated on
+  * !manual_role, (c) SESSREQINT only when !manual_role.
+  */
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -900,6 +900,20 @@ static void dwc2_get_device_properties(struct dwc2_hsotg *hsotg)
+ 	 * TODO(verify): dwc2_get_device_properties() is the DT-reading site in
+ 	 * params.c. Add the manual-role opt-in here (or wherever params are
+ 	 * finalised, before the first dwc2_core_init()).
+ 	 */
++	hsotg->manual_role =
++		device_property_read_bool(hsotg->dev, "snps,manual-role-switch");
++	if (hsotg->manual_role) {
++		/*
++		 * external_id_pin_ctl already suppresses CONIDSTSCHNG at every
++		 * dwc2_core_init(); pin it so the connector-ID interrupt is
++		 * never even armed. The dwc2_role knob is now the only thing
++		 * that changes the role. (dwc2_enable_common_interrupts() also
++		 * masks OTGINT/SESSREQINT when manual_role is set.)
++		 */
++		hsotg->params.external_id_pin_ctl = 1;
++		dev_info(hsotg->dev,
++			 "manual dwc2_role switch enabled; OTG state machine masked\n");
++	}
+ }
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -320,6 +320,177 @@ static int dwc2_vbus_supply_exit(struct dwc2_hsotg *hsotg)
+ 	if (hsotg->vbus_supply)
+ 		return regulator_disable(hsotg->vbus_supply);
+
+ 	return 0;
+ }
+
++/* ------------------------------------------------------------------ *
++ * NixVegas badge: manual, interrupt-masked host<->device role switch. *
++ * ------------------------------------------------------------------ *
++ *
++ * These live in hcd.c because dwc2_vbus_supply_init/_exit() are static
++ * here and dwc2_switch_role() has to raise/lower USB_VBUS_EN. The switch
++ * mirrors dwc2_conn_id_status_change()'s two branches but is called
++ * synchronously from a sysfs write, with the OTG state machine masked so
++ * the connector-ID interrupt a forced mode change raises never wakes the
++ * worker (which is what flaps on this board's self-referential VBUS).
++ */
++
++/*
++ * Program a FIXED session-valid override in GOTGCTL so the core stops
++ * looking at the (oscillating, self-referential) USB_VBUS_DET and uses
++ * the value we pin: A-valid for host, B-valid for device, VBUS-valid for
++ * both, plus the debounce-filter bypass. This is the decoupling step --
++ * with the override on, VBUS_DET transitions are ignored by the core.
++ */
++static void dwc2_role_set_ovr(struct dwc2_hsotg *hsotg, bool host)
++{
++	u32 gotgctl = dwc2_readl(hsotg, GOTGCTL);
++
++	gotgctl |= GOTGCTL_BVALOEN | GOTGCTL_AVALOEN |
++		   GOTGCTL_VBVALOEN | GOTGCTL_DBNCE_FLTR_BYPASS;
++	gotgctl &= ~(GOTGCTL_BVALOVAL | GOTGCTL_AVALOVAL);
++	gotgctl |= GOTGCTL_VBVALOVAL;
++	if (host)
++		gotgctl |= GOTGCTL_AVALOVAL;
++	else
++		gotgctl |= GOTGCTL_BVALOVAL;
++	dwc2_writel(hsotg, gotgctl, GOTGCTL);
++}
++
++/*
++ * dwc2_core_init() -> dwc2_enable_common_interrupts() runs on every
++ * switch; manual_role already keeps the OTG bits out of GINTMSK, but
++ * clear them here too (belt-and-braces) and ack any latched GOTGINT.
++ */
++static void dwc2_role_mask_otg_irqs(struct dwc2_hsotg *hsotg)
++{
++	u32 gintmsk = dwc2_readl(hsotg, GINTMSK);
++
++	gintmsk &= ~(GINTSTS_CONIDSTSCHNG | GINTSTS_SESSREQINT |
++		     GINTSTS_OTGINT | GINTSTS_DISCONNINT);
++	dwc2_writel(hsotg, gintmsk, GINTMSK);
++	/* Ack any OTG events that slipped in while we were switching. */
++	dwc2_writel(hsotg, 0xffffffff, GOTGINT);
++}
++
++/*
++ * Switch the controller to a FIXED role by hand. host==true -> A-host,
++ * host==false -> B-peripheral. No OTG state machine, no worker, no
++ * usb-role-switch. Must run in process context (it sleeps in
++ * dwc2_force_mode()/dwc2_core_init()); the sysfs store() below provides
++ * that. Serialised by hsotg->init_mutex.
++ *
++ * TODO(verify): dwc2_hcd_start()/dwc2_hcd_stop(),
++ * dwc2_hsotg_core_init_disconnected()/_connect()/dwc2_hsotg_disconnect(),
++ * dwc2_enable_acg(), dwc2_core_init(), dwc2_enable_global_interrupts() and
++ * dwc2_force_mode() are exactly the calls dwc2_conn_id_status_change()
++ * makes today; confirm signatures against 7.2.4.
++ */
++int dwc2_switch_role(struct dwc2_hsotg *hsotg, bool host)
++{
++	unsigned long flags;
++
++	if (!hsotg->manual_role) {
++		dev_warn(hsotg->dev,
++			 "dwc2_role: manual switch not enabled (need snps,manual-role-switch)\n");
++		return -EPERM;
++	}
++
++	mutex_lock(&hsotg->init_mutex);
++
++	if (host && dwc2_is_host_mode(hsotg))
++		goto out;			/* already host */
++	if (!host && dwc2_is_device_mode(hsotg))
++		goto out;			/* already device */
++
++	dev_info(hsotg->dev, "dwc2_role: switching to %s\n",
++		 host ? "host" : "device");
++
++	/* Pin the session-valid override, then force the fixed mode. With the
++	 * OTG IRQs masked (manual_role) the CONIDSTSCHNG this raises is inert. */
++	spin_lock_irqsave(&hsotg->lock, flags);
++	dwc2_role_set_ovr(hsotg, host);
++	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	dwc2_force_mode(hsotg, host);		/* GUSBCFG ForceHst/DevMode + settle wait */
++
++	if (host) {
++		/* Detach the gadget before we become the host. */
++		spin_lock_irqsave(&hsotg->lock, flags);
++		dwc2_hsotg_disconnect(hsotg);
++		spin_unlock_irqrestore(&hsotg->lock, flags);
++
++		hsotg->op_state = OTG_STATE_A_HOST;
++		dwc2_core_init(hsotg, false);
++		dwc2_enable_global_interrupts(hsotg);
++		dwc2_role_mask_otg_irqs(hsotg);	/* re-mask after core_init */
++		/* dwc2_hcd_start -> start_work -> dwc2_host_start ->
++		 * _dwc2_hcd_start -> dwc2_vbus_supply_init(): VBUS_EN high. */
++		dwc2_hcd_start(hsotg);
++	} else {
++		/* Stop sourcing VBUS *before* dropping out of host, then tear
++		 * the host controller down to idle. */
++		dwc2_vbus_supply_exit(hsotg);	/* VBUS_EN low */
++		dwc2_hcd_stop(hsotg);
++
++		hsotg->op_state = OTG_STATE_B_PERIPHERAL;
++		dwc2_core_init(hsotg, false);
++		dwc2_enable_global_interrupts(hsotg);
++		dwc2_role_mask_otg_irqs(hsotg);	/* re-mask after core_init */
++		spin_lock_irqsave(&hsotg->lock, flags);
++		dwc2_hsotg_core_init_disconnected(hsotg, false);
++		spin_unlock_irqrestore(&hsotg->lock, flags);
++		dwc2_enable_acg(hsotg);
++		dwc2_hsotg_core_connect(hsotg);	/* clear SFTDISCON -> D+ pullup */
++	}
++
++out:
++	mutex_unlock(&hsotg->init_mutex);
++	return 0;
++}
++
++/* ---- sysfs: /sys/devices/.../4340000.usb/dwc2_role ---- */
++static ssize_t dwc2_role_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct dwc2_hsotg *hsotg = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n",
++			  dwc2_is_host_mode(hsotg) ? "host" : "device");
++}
++
++static ssize_t dwc2_role_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t count)
++{
++	struct dwc2_hsotg *hsotg = dev_get_drvdata(dev);
++	bool host;
++	int ret;
++
++	if (sysfs_streq(buf, "host") || sysfs_streq(buf, "1"))
++		host = true;
++	else if (sysfs_streq(buf, "device") || sysfs_streq(buf, "peripheral") ||
++		 sysfs_streq(buf, "0"))
++		host = false;
++	else
++		return -EINVAL;
++
++	ret = dwc2_switch_role(hsotg, host);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_RW(dwc2_role);
++
++/*
++ * TODO(verify): dev_get_drvdata(dev) must return the struct dwc2_hsotg*.
++ * dwc2_driver_probe() does platform_set_drvdata(dev, hsotg), so on the
++ * platform device this holds; confirm for the 7.2.4 probe.
++ */
++
+ /* TODO(verify): create/remove the attribute at hcd init/teardown. The two
+  * hunks below anchor on dwc2_hcd_init()'s success tail and
+  * dwc2_hcd_remove()'s entry; confirm the surrounding lines. */
+@@ -5000,6 +5171,9 @@ int dwc2_hcd_init(struct dwc2_hsotg *hsotg)
+ 	if (retval)
+ 		goto error4;
+
++	if (hsotg->manual_role &&
++	    device_create_file(hsotg->dev, &dev_attr_dwc2_role))
++		dev_warn(hsotg->dev, "dwc2_role: could not create sysfs attr\n");
++
+ 	dwc2_hcd_dump_state(hsotg);
+
+ 	dwc2_dbg_hcd_init(hsotg);
+@@ -5040,6 +5214,9 @@ void dwc2_hcd_remove(struct dwc2_hsotg *hsotg)
+ {
+ 	struct usb_hcd *hcd;
+
++	if (hsotg->manual_role)
++		device_remove_file(hsotg->dev, &dev_attr_dwc2_role);
++
+ 	hcd = dwc2_hsotg_to_hcd(hsotg);

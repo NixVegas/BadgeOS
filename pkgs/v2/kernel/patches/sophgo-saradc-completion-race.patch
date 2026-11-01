@@ -1,0 +1,106 @@
+iio: adc: sophgo-saradc: arm the completion per conversion
+
+The driver keeps one struct completion for the whole device and never
+resets it between reads, so the completion's done counter is free to
+drift above zero. Every surplus complete() makes a later
+wait_for_completion_timeout() return without an interrupt having been
+raised for the conversion it is actually waiting on, and read_raw()
+then reads CH_RESULT_REG while the SAR is still converting. The
+CH_VALID bit does not catch this: it is still set from the previous
+conversion on that channel.
+
+There are three ways the counter drifts:
+
+ 1. The interrupt is level triggered (GIC SPI 116 on the SG2000) and
+    the INTR_CLR write in the handler is posted, so the line can still
+    be asserted when the handler returns. The GIC re-presents it, the
+    handler runs a second time for one conversion, and completes twice.
+
+ 2. A wait that times out leaves its interrupt to arrive afterwards,
+    and nothing consumes that completion.
+
+ 3. probe() enables the interrupt without clearing INTR_STA. The FSBL
+    and u-boot both read the SARADC on this SoC, so the status is
+    frequently already latched and the handler fires once before the
+    first read ever happens.
+
+Fix all three: read INTR_STA back to flush the posted clear, clear a
+stale status before enabling the interrupt, and reinit_completion()
+ahead of each measurement so a wait always requires an interrupt from
+that conversion.
+
+Measured on a Milk-V Duo S (SG2000) reading the 5 V rail through a
+2.2M/1M divider. The median is correct either way; what changes is the
+proportion of individual samples that are junk. Sampling as fast as
+sysfs allows, with nothing else touching the ADC:
+
+  before: 69% of samples more than 15% off the median (min 130, max 704)
+  after:   4% (min 272, max 384)
+
+At one sample every 50 ms it goes from 46% to 0%. The median is 320 either
+way, which is the correct 4.960 V through this board divider -- only the
+spread changes.
+
+Note this leaves a separate race in the polled path (irq < 0)
+untouched: readl_poll_timeout() evaluates its condition before its
+first delay, so it can observe BUSY still clear from before the
+conversion started and return immediately. The SG2000 wires up the
+interrupt, so that path is not exercised here and the fix is left to
+someone who can test it.
+
+Fixes: d1022ff5f9b9 ("iio: adc: sophgo-saradc: Add driver for Sophgo CV1800B SARADC")
+Signed-off-by: Morgan Jones <me@numin.it>
+---
+--- a/drivers/iio/adc/sophgo-cv1800b-adc.c
++++ b/drivers/iio/adc/sophgo-cv1800b-adc.c
+@@ -71,6 +71,19 @@
+ static void cv1800b_adc_start_measurement(struct cv1800b_adc *saradc,
+ 					  int channel)
+ {
++	/*
++	 * One completion is shared by every read, and nothing resets it
++	 * between conversions, so any surplus complete() -- a duplicate from
++	 * the level-triggered handler, or one that lands after a wait timed
++	 * out -- leaves the counter non-zero. The next
++	 * wait_for_completion_timeout() then returns immediately and the
++	 * result register is read while a conversion is still in flight,
++	 * yielding a partial SAR value. Arm it fresh for each measurement so
++	 * a wait always requires an interrupt raised by THIS conversion.
++	 */
++	if (saradc->irq > 0)
++		reinit_completion(&saradc->completion);
++
+ 	writel(0, saradc->regs + CV1800B_ADC_CTRL_REG);
+ 	writel(CV1800B_ADC_SEL(channel) | CV1800B_ADC_EN,
+ 	       saradc->regs + CV1800B_ADC_CTRL_REG);
+@@ -146,6 +159,14 @@
+ 		return IRQ_NONE;
+ 
+ 	writel(CV1800B_ADC_INTR_CLR_BIT, saradc->regs + CV1800B_ADC_INTR_CLR_REG);
++	/*
++	 * The interrupt is level triggered and the clear above is a posted
++	 * write. Read the status register back so the clear has reached the
++	 * device before this handler returns; otherwise the line can still be
++	 * asserted at the GIC, the handler re-runs, and a single conversion
++	 * completes the completion twice.
++	 */
++	readl(saradc->regs + CV1800B_ADC_INTR_STA_REG);
+ 	complete(&saradc->completion);
+ 
+ 	return IRQ_HANDLED;
+@@ -183,6 +204,15 @@
+ 
+ 	saradc->irq = platform_get_irq_optional(pdev, 0);
+ 	if (saradc->irq > 0) {
++		/*
++		 * The FSBL and u-boot both take SARADC readings, so a
++		 * conversion-complete status can already be latched here.
++		 * Enabling the interrupt over it fires the handler before the
++		 * first read and pre-charges the completion. Clear it first.
++		 */
++		writel(CV1800B_ADC_INTR_CLR_BIT,
++		       saradc->regs + CV1800B_ADC_INTR_CLR_REG);
++
+ 		init_completion(&saradc->completion);
+ 		ret = devm_request_irq(dev, saradc->irq,
+ 				       cv1800b_adc_interrupt_handler, 0,

@@ -1,0 +1,12 @@
+[Unit]
+Description=coda-cube, the CODA980 cube, on %i's sway session
+After=soph-display-load.service
+
+[Service]
+Type=exec
+ExecStartPre=@libexec@/codec-up
+ExecStart=@libexec@/session %i
+ExecStopPost=@libexec@/cleanup
+NoNewPrivileges=yes
+TimeoutStartSec=60
+TimeoutStopSec=10

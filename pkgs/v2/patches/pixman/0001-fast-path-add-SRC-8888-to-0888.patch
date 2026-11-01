@@ -1,0 +1,126 @@
+fast-path: add SRC 8888 to 0888
+
+pixman has no fast path from a 32bpp source to a 24bpp destination, so
+SRC from a8r8g8b8 or x8r8g8b8 to r8g8b8 (and OVER from x8r8g8b8, which
+pixman turns into SRC) runs the general fetch, combine and store loop.
+A compositor that renders 32bpp clients into a 24bpp scanout buffer
+pays that for every frame.
+
+Add fast_composite_src_x888_0888. It keeps the low 24 bits of each
+pixel and, once the destination is 4-byte aligned, writes four pixels
+as three aligned 32-bit words. pixman stores its 24bpp formats in host
+byte order and the channel order passes through unchanged, so the same
+function serves r8g8b8 and b8g8r8.
+
+Add src_8888_0888, src_x888_0888 and src_8888_0888_rev to
+lowlevel-blt-bench.
+
+Signed-off-by: badgeos
+---
+diff --git a/pixman/pixman-fast-path.c b/pixman/pixman-fast-path.c
+index d510cac..e112302 100644
+--- a/pixman/pixman-fast-path.c
++++ b/pixman/pixman-fast-path.c
+@@ -650,6 +650,69 @@ fast_composite_src_x888_8888 (pixman_implementation_t *imp,
+     }
+ }
+ 
++/* SRC from a 32bpp format to the 24bpp format with the same channel
++ * order: keep the low 24 bits of each pixel, stored in host byte order
++ * like every pixman 24bpp format (little-endian: low byte first). The
++ * channel order does not matter, so this serves 0888 and its reverse.
++ */
++static void
++fast_composite_src_x888_0888 (pixman_implementation_t *imp,
++			      pixman_composite_info_t *info)
++{
++    PIXMAN_COMPOSITE_ARGS (info);
++    uint8_t     *dst_line, *dst;
++    uint32_t    *src_line, *src;
++    int dst_stride, src_stride;
++    int32_t w;
++
++    PIXMAN_IMAGE_GET_LINE (dest_image, dest_x, dest_y, uint8_t, dst_stride, dst_line, 3);
++    PIXMAN_IMAGE_GET_LINE (src_image, src_x, src_y, uint32_t, src_stride, src_line, 1);
++
++    while (height--)
++    {
++	dst = dst_line;
++	dst_line += dst_stride;
++	src = src_line;
++	src_line += src_stride;
++	w = width;
++
++	/* Single pixels up to a 4-byte aligned destination, then four
++	 * pixels as three aligned 32-bit stores.
++	 */
++	while (w && ((uintptr_t)dst & 3))
++	{
++	    store_24 (dst, *src++);
++	    dst += 3;
++	    w--;
++	}
++
++	while (w >= 4)
++	{
++	    uint32_t s0 = src[0], s1 = src[1], s2 = src[2], s3 = src[3];
++	    uint32_t *d = (uint32_t *)dst;
++
++#ifdef WORDS_BIGENDIAN
++	    d[0] = (s0 << 8) | ((s1 >> 16) & 0xff);
++	    d[1] = (s1 << 16) | ((s2 >> 8) & 0xffff);
++	    d[2] = (s2 << 24) | (s3 & 0xffffff);
++#else
++	    d[0] = (s0 & 0xffffff) | (s1 << 24);
++	    d[1] = ((s1 >> 8) & 0xffff) | (s2 << 16);
++	    d[2] = ((s2 >> 16) & 0xff) | (s3 << 8);
++#endif
++	    src += 4;
++	    dst += 12;
++	    w -= 4;
++	}
++
++	while (w--)
++	{
++	    store_24 (dst, *src++);
++	    dst += 3;
++	}
++    }
++}
++
+ #if 0
+ static void
+ fast_composite_over_8888_0888 (pixman_implementation_t *imp,
+@@ -1861,6 +1924,10 @@ static const pixman_fast_path_t c_fast_paths[] =
+     PIXMAN_STD_FAST_PATH (SRC, solid, null, r5g6b5, fast_composite_solid_fill),
+     PIXMAN_STD_FAST_PATH (SRC, x8r8g8b8, null, a8r8g8b8, fast_composite_src_x888_8888),
+     PIXMAN_STD_FAST_PATH (SRC, x8b8g8r8, null, a8b8g8r8, fast_composite_src_x888_8888),
++    PIXMAN_STD_FAST_PATH (SRC, a8r8g8b8, null, r8g8b8, fast_composite_src_x888_0888),
++    PIXMAN_STD_FAST_PATH (SRC, x8r8g8b8, null, r8g8b8, fast_composite_src_x888_0888),
++    PIXMAN_STD_FAST_PATH (SRC, a8b8g8r8, null, b8g8r8, fast_composite_src_x888_0888),
++    PIXMAN_STD_FAST_PATH (SRC, x8b8g8r8, null, b8g8r8, fast_composite_src_x888_0888),
+     PIXMAN_STD_FAST_PATH (SRC, a8r8g8b8, null, x8r8g8b8, fast_composite_src_memcpy),
+     PIXMAN_STD_FAST_PATH (SRC, a8r8g8b8, null, a8r8g8b8, fast_composite_src_memcpy),
+     PIXMAN_STD_FAST_PATH (SRC, x8r8g8b8, null, x8r8g8b8, fast_composite_src_memcpy),
+diff --git a/test/lowlevel-blt-bench.c b/test/lowlevel-blt-bench.c
+index 7ba2986..21f7f5c 100644
+--- a/test/lowlevel-blt-bench.c
++++ b/test/lowlevel-blt-bench.c
+@@ -683,6 +683,9 @@ static const test_entry_t tests_tbl[] =
+     { "src_0888_x888",         PIXMAN_r8g8b8,      0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_x8r8g8b8 },
+     { "src_0888_8888_rev",     PIXMAN_b8g8r8,      0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_x8r8g8b8 },
+     { "src_0888_0565_rev",     PIXMAN_b8g8r8,      0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_r5g6b5 },
++    { "src_8888_0888",         PIXMAN_a8r8g8b8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_r8g8b8 },
++    { "src_x888_0888",         PIXMAN_x8r8g8b8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_r8g8b8 },
++    { "src_8888_0888_rev",     PIXMAN_a8b8g8r8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_b8g8r8 },
+     { "src_x888_x888",         PIXMAN_x8r8g8b8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_x8r8g8b8 },
+     { "src_x888_8888",         PIXMAN_x8r8g8b8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_a8r8g8b8 },
+     { "src_8888_8888",         PIXMAN_a8r8g8b8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_a8r8g8b8 },
+@@ -760,6 +763,7 @@ static const test_entry_t special_patterns[] =
+     { "src_n_2a10",            PIXMAN_a2r10g10b10, 1, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_a2r10g10b10 },
+     { "src_0888_8888_rev",     PIXMAN_b8g8r8,      0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_x8r8g8b8 },
+     { "src_0888_0565_rev",     PIXMAN_b8g8r8,      0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_r5g6b5 },
++    { "src_8888_0888_rev",     PIXMAN_a8b8g8r8,    0, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_b8g8r8 },
+     { "src_n_8",               PIXMAN_a8,          1, PIXMAN_OP_SRC,     PIXMAN_null,     0, PIXMAN_a8 },
+     { "pixbuf",                PIXMAN_x8b8g8r8,    0, PIXMAN_OP_SRC,     PIXMAN_a8b8g8r8, 0, PIXMAN_a8r8g8b8 },
+     { "rpixbuf",               PIXMAN_x8b8g8r8,    0, PIXMAN_OP_SRC,     PIXMAN_a8b8g8r8, 0, PIXMAN_a8b8g8r8 },

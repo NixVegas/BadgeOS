@@ -1,0 +1,43 @@
+vpss/scaler: export sclr_disp_set_out_csc_matrix()
+
+sclr_disp_set_out_csc() only takes an index into the built-in csc_mtrx
+table, and the table holds YUV<->RGB conversions only. soph_drm needs an
+RGB->RGB matrix on the DISP output (full range compressed into 16..235),
+so export a setter that programs the output CSC from a caller's matrix
+and enables it.
+
+Signed-off-by: badgeos
+---
+--- a/interdrv/vpss/chip/cv181x/scaler.c
++++ b/interdrv/vpss/chip/cv181x/scaler.c
+@@ -3443,6 +3443,30 @@
+ EXPORT_SYMBOL_GPL(sclr_disp_set_out_csc);
+ 
+ /**
++ * sclr_disp_set_out_csc_matrix - setup disp's csc on output from a matrix.
++ *
++ * @param cfg: coefficients (BIT(10) = 1.0, BIT(13) = negative) and the sub
++ *             and add offsets, as in csc_mtrx.
++ */
++void sclr_disp_set_out_csc_matrix(const struct sclr_csc_matrix *cfg)
++{
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC1,
++		   (cfg->coef[1][0] << 16) | (cfg->coef[0][2]));
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC2,
++		   (cfg->coef[1][2] << 16) | (cfg->coef[1][1]));
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC3,
++		   (cfg->coef[2][1] << 16) | (cfg->coef[2][0]));
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC4, (cfg->coef[2][2]));
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC_SUB,
++		   (cfg->sub[2] << 16) | (cfg->sub[1] << 8) | cfg->sub[0]);
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC_ADD,
++		   (cfg->add[2] << 16) | (cfg->add[1] << 8) | cfg->add[0]);
++	_reg_write(reg_base + REG_SCL_DISP_OUT_CSC0, BIT(31) |
++		   (cfg->coef[0][1] << 16) | (cfg->coef[0][0]));
++}
++EXPORT_SYMBOL_GPL(sclr_disp_set_out_csc_matrix);
++
++/**
+  * sclr_disp_set_pattern - setup disp's pattern generator.
+  *
+  * @param type: type of pattern

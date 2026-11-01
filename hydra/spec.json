@@ -1,0 +1,19 @@
+{
+  "enabled": 1,
+  "hidden": false,
+  "description": "BadgeOS: generates one flake jobset per tracked branch (see hydra/jobsets.nix)",
+  "nixexprinput": "src",
+  "nixexprpath": "hydra/jobsets.nix",
+  "checkinterval": 300,
+  "schedulingshares": 1,
+  "enableemail": false,
+  "emailoverride": "",
+  "keepnr": 3,
+  "inputs": {
+    "src": {
+      "type": "git",
+      "value": "https://git.nixos.lv/NixVegas/BadgeOS master",
+      "emailresponsible": false
+    }
+  }
+}

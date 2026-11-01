@@ -1,0 +1,216 @@
+vo_mipi_tx: the video player's register fixes as module parameters and sysfs
+
+The badge's video player raised the display by poking registers through
+/dev/mem around the dsiup tool's SET_DEV_CFG ioctl: the fabric clock
+low-power writes (opt-in), DISP_CFG SHRD_SEL, the DISPPLL divider pin, and,
+once the LT8912B is programmed, the DISP sync-polarity clear plus a forced
+shadow update. Do the same writes here, with the same values and in the
+same order:
+
+- fab_lowpower_off, disp_working_bank, disppll_fix_div (module parameters,
+  off by default) run at the start of SET_DEV_CFG, before the D-PHY, the
+  DISP timing and the DSI MAC are programmed, which is exactly where the
+  player did them; the fabric readback it logged becomes a dev_info.
+- disp_sync_update (write-only boolean sysfs on the platform device) does
+  the polarity clear and the forced update when the player writes 1 after
+  the bridge; disp_cfg reads DISP_CFG back.
+
+scaler.c exports the two DISP_CFG helpers this needs.
+
+Signed-off-by: badgeos
+---
+diff --git interdrv/vo/chip/cv181x/vo_mipi_tx.c interdrv/vo/chip/cv181x/vo_mipi_tx.c
+index f6b5c9c..fbe20b9 100644
+--- a/interdrv/vo/chip/cv181x/vo_mipi_tx.c
++++ b/interdrv/vo/chip/cv181x/vo_mipi_tx.c
+@@ -79,6 +79,129 @@ static int debug = 1;
+  */
+ module_param(debug, int, 0644);
+ 
++/*
++ * Board display fixes, run at the start of the SET_DEV_CFG ioctl in this
++ * order, before the D-PHY, the DISP timing and the DSI MAC are programmed.
++ * All off by default, so soph_mipi_tx_setup() and other ioctl users are
++ * unchanged; the badge's video player turns them on.
++ */
++static bool fab_lowpower_off;
++module_param(fab_lowpower_off, bool, 0644);
++MODULE_PARM_DESC(fab_lowpower_off,
++		 "SET_DEV_CFG first turns off the sys_ctrl, ddrsys and vipsys fabric clock low-power/slowdown (the writes of the vendor middleware's _sys_low_power_off())");
++
++static bool disp_working_bank;
++module_param(disp_working_bank, bool, 0644);
++MODULE_PARM_DESC(disp_working_bank,
++		 "SET_DEV_CFG first sets DISP_CFG SHRD_SEL (bit18), so the read-modify-writes of the DISP registers read the working bank, not the consumed shadow");
++
++static bool disppll_fix_div;
++module_param(disppll_fix_div, bool, 0644);
++MODULE_PARM_DESC(disppll_fix_div,
++		 "SET_DEV_CFG pins the DISPPLL synthesizer divider (CLKGEN 0x03002860: 0x40, then 0x41) before the D-PHY comes up");
++
++#define MIPI_TX_CLKGEN_BASE	0x03002000	/* sys_ctrl clklp at +0xa00, DISPPLL SSC at +0x860 */
++#define MIPI_TX_DDRSYS_BASE	0x0800a000
++#define MIPI_TX_VIPSYS_BASE	0x0a0c8000
++
++static const u16 mipi_tx_sys_ctrl_lp[] = {
++	0xa00, 0xa04, 0xa0c, 0xa10, 0xa14, 0xa18, 0xa1c, 0xa20, 0xa24, 0xa28, 0xa2c, 0xa30,
++};
++static const u16 mipi_tx_vipsys_lp_c01[] = { 0x020, 0x024, 0x028 };
++static const u16 mipi_tx_vipsys_lp_1f05[] = {
++	0x038, 0x03c, 0x040, 0x044, 0x048, 0x0c4, 0x0c8, 0x0cc,
++};
++
++static void mipi_tx_fab_lowpower_off(void __iomem *clk, void __iomem *vip)
++{
++	void __iomem *ddr = ioremap(MIPI_TX_DDRSYS_BASE, PAGE_SIZE);
++	int i;
++
++	writel(0xffffffff, clk + 0xa50);
++	writel(0xffffffff, clk + 0xa60);
++	for (i = 0; i < ARRAY_SIZE(mipi_tx_sys_ctrl_lp); i++)
++		writel(0x003f5500, clk + mipi_tx_sys_ctrl_lp[i]);
++	if (ddr) {
++		writel(0x00000fff, ddr + 0x014);
++		iounmap(ddr);
++	} else {
++		pr_err("mipi_tx: cannot map ddrsys, its clock low-power stays on\n");
++	}
++	for (i = 0; i < ARRAY_SIZE(mipi_tx_vipsys_lp_c01); i++)
++		writel(0x00000c01, vip + mipi_tx_vipsys_lp_c01[i]);
++	writel(0x0c010c01, vip + 0x02c);
++	for (i = 0; i < ARRAY_SIZE(mipi_tx_vipsys_lp_1f05); i++)
++		writel(0x001f0500, vip + mipi_tx_vipsys_lp_1f05[i]);
++}
++
++static void mipi_tx_board_fixes(struct cvi_vip_mipi_tx_dev *tdev)
++{
++	void __iomem *clk = ioremap(MIPI_TX_CLKGEN_BASE, PAGE_SIZE);
++	void __iomem *vip = ioremap(MIPI_TX_VIPSYS_BASE, PAGE_SIZE);
++
++	if (!clk || !vip) {
++		dev_err(tdev->dev, "cannot map clkgen/vipsys, no board fixes\n");
++		goto out;
++	}
++
++	dev_info(tdev->dev, "fabric clklp now: sys_ctrl 0x03002A50=%#010x vipsys 0x0A0C8020=%#010x\n",
++		 readl(clk + 0xa50), readl(vip + 0x020));
++	if (fab_lowpower_off) {
++		dev_info(tdev->dev, "disabling fabric lowpower/slowdown\n");
++		mipi_tx_fab_lowpower_off(clk, vip);
++		dev_info(tdev->dev, "fabric clklp after: sys_ctrl 0x03002A50=%#010x vipsys 0x0A0C8020=%#010x\n",
++			 readl(clk + 0xa50), readl(vip + 0x020));
++	}
++	if (disp_working_bank)
++		sclr_disp_reg_shadow_sel(false);
++	if (disppll_fix_div) {
++		/* bit6 reg_disppll_ssc_syn_fix_div, then bit0 sw_up (write-1-to-trigger) */
++		writel(0x40, clk + 0x860);
++		writel(0x41, clk + 0x860);
++	}
++out:
++	if (vip)
++		iounmap(vip);
++	if (clk)
++		iounmap(clk);
++}
++
++/*
++ * disp_sync_update: writing a true boolean once the bridge is programmed clears the DISP
++ * sync polarity (VS_POL|HS_POL, DISP_CFG bits 5/6) and forces a shadow
++ * register update (bit16): the LT8912B samples positive sync. disp_cfg reads
++ * DISP_CFG back.
++ */
++static ssize_t disp_sync_update_store(struct device *dev, struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	bool go;
++	int rc = kstrtobool(buf, &go);
++
++	if (rc)
++		return rc;
++	if (!go)
++		return count;
++	sclr_disp_clear_sync_pol();
++	sclr_disp_reg_force_up();
++	dev_info(dev, "DISP sync polarity cleared, DISP_CFG now %#010x\n", sclr_disp_cfg_read());
++	return count;
++}
++static DEVICE_ATTR_WO(disp_sync_update);
++
++static ssize_t disp_cfg_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%#010x\n", sclr_disp_cfg_read());
++}
++static DEVICE_ATTR_RO(disp_cfg);
++
++static struct attribute *mipi_tx_attrs[] = {
++	&dev_attr_disp_sync_update.attr,
++	&dev_attr_disp_cfg.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(mipi_tx);
++
+ /*
+  * global variables definition
+  */
+@@ -405,6 +528,7 @@ static long mipi_tx_ioctl(struct file *file, unsigned int cmd, unsigned long arg
+ 			break;
+ 		}
+ 
++		mipi_tx_board_fixes(tdev);
+ 		rc = mipi_tx_set_combo_dev_cfg(tdev, &stcombo_dev_cfg);
+ 		if (rc < 0)
+ 			CVI_VIP_MIPI_TX_ERR("mipi_tx set combo_dev config failed!\n");
+@@ -924,6 +1048,7 @@ static struct platform_driver cvi_mipi_tx_pdrv = {
+ 		.name = MIPI_TX_DEV_NAME,
+ 		.owner = THIS_MODULE,
+ 		.of_match_table = cvi_mipi_tx_dt_match,
++		.dev_groups = mipi_tx_groups,
+ 	},
+ // #if defined(CONFIG_PM)
+ // 	.suspend = vo_mipi_tx_suspend,
+diff --git interdrv/vpss/chip/cv181x/scaler.c interdrv/vpss/chip/cv181x/scaler.c
+index f7b24c0..e231e2b 100644
+--- a/interdrv/vpss/chip/cv181x/scaler.c
++++ b/interdrv/vpss/chip/cv181x/scaler.c
+@@ -3091,6 +3091,27 @@ void sclr_disp_reg_force_up(void)
+ }
+ EXPORT_SYMBOL_GPL(sclr_disp_reg_force_up);
+ 
++/**
++ * sclr_disp_clear_sync_pol - clear DISP_CFG VS_POL (bit5) and HS_POL (bit6).
++ *
++ * The same read-modify-write sclr_disp_set_timing() does for a timing with
++ * both polarities false, without rewriting the timing registers.
++ */
++void sclr_disp_clear_sync_pol(void)
++{
++	_reg_write_mask(reg_base + REG_SCL_DISP_CFG, 0x0060, 0);
++}
++EXPORT_SYMBOL_GPL(sclr_disp_clear_sync_pol);
++
++/**
++ * sclr_disp_cfg_read - DISP_CFG as a CPU read sees it (SHRD_SEL picks the bank).
++ */
++u32 sclr_disp_cfg_read(void)
++{
++	return _reg_read(reg_base + REG_SCL_DISP_CFG);
++}
++EXPORT_SYMBOL_GPL(sclr_disp_cfg_read);
++
+ /**
+  * sclr_disp_tgen - enable timing-generator on disp.
+  *
+diff --git interdrv/vpss/chip/cv181x/scaler.h interdrv/vpss/chip/cv181x/scaler.h
+index 222e7bd..e220844 100644
+--- a/interdrv/vpss/chip/cv181x/scaler.h
++++ b/interdrv/vpss/chip/cv181x/scaler.h
+@@ -1206,6 +1206,8 @@ void sclr_disp_gamma_ctrl(bool enable, bool pre_osd);
+ void sclr_disp_gamma_lut_update(const u8 *b, const u8 *g, const u8 *r);
+ void sclr_disp_gamma_lut_read(struct sclr_disp_gamma_attr *gamma_attr);
+ void sclr_disp_reg_force_up(void);
++void sclr_disp_clear_sync_pol(void);
++u32 sclr_disp_cfg_read(void);
+ void sclr_lvdstx_set(union sclr_lvdstx cfg);
+ void sclr_lvdstx_get(union sclr_lvdstx *cfg);
+ void sclr_bt_set(union sclr_bt_enc enc, union sclr_bt_sync_code sync);

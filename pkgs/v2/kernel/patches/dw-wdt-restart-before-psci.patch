@@ -1,0 +1,26 @@
+dw_wdt: run the watchdog restart handler before PSCI's
+
+On the SG2000 (badge) bl31 does not implement PSCI SYSTEM_RESET: the
+PSCI restart handler (priority 129) never returns, so the restart
+notifier chain never reaches dw_wdt's handler (priority 128) and every
+kernel-initiated restart wedges the SoC with the console dead:
+dm-verity restart_on_corruption at 1.5 s, `echo b > /proc/sysrq-trigger`,
+panic=N. Measured on the bench 2026-10-17 (JTAG read of WDT_CR=0 and an
+untouched WDT_TORR after the wedge). A plain `systemctl reboot` only
+works because systemd leaves /dev/watchdog0 running at shutdown.
+
+Run dw_wdt's handler first: it arms the watchdog with the shortest period
+and the chip resets a few ms later, whether or not the PSCI call that
+follows ever returns.
+
+--- a/drivers/watchdog/dw_wdt.c	2026-10-11 06:27:50.000000000 -0700
++++ b/drivers/watchdog/dw_wdt.c	2026-10-17 03:08:08.572194635 -0700
+@@ -650,7 +650,7 @@
+ 
+ 	platform_set_drvdata(pdev, dw_wdt);
+ 
+-	watchdog_set_restart_priority(wdd, 128);
++	watchdog_set_restart_priority(wdd, 255);
+ 	watchdog_stop_on_reboot(wdd);
+ 
+ 	ret = watchdog_register_device(wdd);

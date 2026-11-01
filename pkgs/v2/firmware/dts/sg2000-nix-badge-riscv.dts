@@ -1,0 +1,603 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Device tree for the Milk-V Duo S RISC-V core (Sophgo SG2000, T-Head C906).
+ *
+ * The SG2000 die is the SG2002 family (cv181x/cv180x) with an added ARM core.
+ * From the C906 the SoC is identical to the SG2002. The mainline sg2002.dtsi
+ * applies directly.
+ *
+ * Based on arch/riscv/boot/dts/sophgo/sg2002-licheerv-nano-b.dts.
+ *
+ * Nodes included (boot-focused):
+ *   - uart0: console at ttyS0, 115200n8.
+ *   - sdhci0: SD card root (NIXOS_RISCV label), 4-bit bus.
+ *   - osc: 25 MHz oscillator (same as LicheeRV Nano).
+ *   - memory: overrides the sg2002.dtsi 256MB with 512MB
+ *     (0x80000000/0x20000000) to match the firmware memory map.
+ *   - Ethernet/gmac0: SG2000 internal EPHY (phy-mode = "internal"). No external
+ *     PHY. The dtsi sets phy-handle=<&internal_ephy> and phy-mode="internal";
+ *     enable the MAC and MDIO. Mirrors mainline cv1812h-huashan-pi.dts.
+ *   - USB: dr_mode = "peripheral" (the usbHost DTB: "host"). VBUS enable is GPIO portb
+ *     pin 5 (USB_VBUS_EN); upstream omits the regulator node.
+ *
+ * Nodes omitted:
+ *   - LEDs, GPIO buttons, camera/CSI: not in the mainline sg2002 dtsi.
+ *
+ * The CPU (thead,c906, rv64imafdc, sv39) comes from cv180x-cpus.dtsi via
+ * sg2002.dtsi.
+ */
+
+/dts-v1/;
+#include "sg2002.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/sophgo,cv1800.h>
+#include "sg2000-module-01.dtsi"
+#include "sg200x-vip.dtsi"
+#include "nix-badge.dtsi"
+#include "sg200x-riscv.dtsi"
+
+/*
+ * Pin IDs and the pin controller.
+ *
+ * The Duo S carries an SG2000 die, not the SG2002 that sg2002.dtsi assumes.
+ * The two packages have different pin tables and are not interchangeable:
+ *
+ *   pinctrl-sg2002.h   65 QFN pins, flat indices,   no VIVO pads
+ *   pinctrl-sg2000.h  110 BGA pins, row/col coords, has VIVO pads
+ *
+ * For example UART0_TX is 18 on SG2002 but PINPOS('M', 5) on SG2000.
+ *
+ * SPI3 drives the WS2812 LED ring. The SPI3 pads are VIVO_D5..D8, which the
+ * SG2002 table cannot name. Bind the pin controller to the SG2000 driver (see
+ * the &pinctrl compatible override below) and give every pinmux an SG2000
+ * coordinate. These identifiers match the ARM DTS, so both cores name the pads
+ * the same way.
+ *
+ * Define the pads here rather than include pinctrl-sg2000.h. sg2002.dtsi
+ * already includes pinctrl-sg2002.h, and the two headers define the same PIN_*
+ * names with different values.
+ */
+#define PINPOS(row, col)	((((row) - 'A' + 1) << 8) + ((col) - 1))
+
+#define SG2000_UART0_TX		PINPOS('M', 5)
+#define SG2000_UART0_RX		PINPOS('M', 4)
+
+#define SG2000_SD0_CLK		PINPOS('L', 1)
+#define SG2000_SD0_CMD		PINPOS('L', 3)
+#define SG2000_SD0_D0		PINPOS('L', 2)
+#define SG2000_SD0_D1		PINPOS('K', 3)
+#define SG2000_SD0_D2		PINPOS('M', 2)
+#define SG2000_SD0_D3		PINPOS('M', 1)
+#define SG2000_SD0_CD		PINPOS('K', 2)
+
+/* eMMC pads, pinctrl-sg2000.h row/col. */
+#define SG2000_EMMC_CLK		PINPOS('R', 4)
+#define SG2000_EMMC_CMD		PINPOS('R', 3)
+#define SG2000_EMMC_DAT0		PINPOS('P', 2)
+#define SG2000_EMMC_DAT1		PINPOS('R', 2)
+#define SG2000_EMMC_DAT2		PINPOS('P', 3)
+#define SG2000_EMMC_DAT3		PINPOS('P', 1)
+#define SG2000_EMMC_RSTN		PINPOS('P', 4)
+
+#define SG2000_SD1_CLK		PINPOS('G', 14)
+#define SG2000_SD1_CMD		PINPOS('G', 15)
+#define SG2000_SD1_D0		PINPOS('H', 15)
+#define SG2000_SD1_D1		PINPOS('H', 14)
+#define SG2000_SD1_D2		PINPOS('F', 14)
+#define SG2000_SD1_D3		PINPOS('G', 13)
+
+/* SPI3 on the 40-pin header: pin19 MOSI, pin21 MISO, pin23 SCK, pin24 CS */
+#define SG2000_VIVO_D5		PINPOS('B', 10)
+#define SG2000_VIVO_D6		PINPOS('C', 10)
+#define SG2000_VIVO_D7		PINPOS('B', 11)
+#define SG2000_VIVO_D8		PINPOS('C', 11)
+
+/* SAO connector IIC1 (SDA/SCL) = pads VIVO_D4 / VIVO_D3 = PORTB 17/18. */
+#define SG2000_VIVO_D3		PINPOS('A', 10)
+#define SG2000_VIVO_D4		PINPOS('D', 10)
+/* RJ45 EPHY LED pads (RTC domain): N12 green/LINK, P13 orange/speed. */
+#define SG2000_PWR_WAKEUP0	PINPOS('N', 12)
+#define SG2000_PWR_BUTTON1	PINPOS('P', 13)
+
+/* HDMI bridge IIC2. Same pads as the ARM DTS names them. */
+#define SG2000_IIC2_SCL		PINPOS('J', 13)
+#define SG2000_IIC2_SDA		PINPOS('J', 14)
+
+/ {
+	model = "Milk-V Duo S";
+	compatible = "milkv,duo-s", "sophgo,sg2002";
+
+	aliases {
+		serial0 = &uart0;
+		/* The SPI core sets bus_num from of_alias_get_id(node, "spi")
+		 * and falls back to dynamic numbering when no alias matches
+		 * (drivers/spi/spi.c). Without this alias the only enabled
+		 * controller takes bus 0 and spidev appears as /dev/spidev0.0. */
+		spi3 = &spi3;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* Override the sg2002.dtsi 256MB with 512MB to match the firmware memmap. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+};
+
+/* Rebind the pin controller to the SG2000 driver so the VIVO pads exist. The
+ * node (pinctrl@3001000) comes from sg2002.dtsi as "sophgo,sg2002-pinctrl".
+ * Both drivers use the same register block but a different pin table.
+ * CONFIG_PINCTRL_SOPHGO_SG2000 must be enabled in the kernel. */
+&pinctrl {
+	compatible = "sophgo,sg2000-pinctrl";
+
+	uart0_cfg: uart0-cfg {
+		uart0-pins {
+			pinmux = <PINMUX(SG2000_UART0_TX, 0)>,
+				 <PINMUX(SG2000_UART0_RX, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* SAO IIC1 for the SSD1306 OLED (see &i2c1 in nix-badge.dtsi). VIVO_D4/D3
+	 * = PORTB 17/18, IIC1 = pinmux 5 (found empirically on the arm core: mux 5
+	 * is the only value where 0x3c ACKs). bias-pull-up enables the pad input
+	 * buffer so the controller senses SDA, and parallels the U12 TXS0104E pull. */
+	i2c1_cfg: i2c1-cfg {
+		i2c1-pins {
+			pinmux = <PINMUX(SG2000_VIVO_D4, 5)>, /* SAO SDA, portb 17 */
+				 <PINMUX(SG2000_VIVO_D3, 5)>; /* SAO SCL, portb 18 */
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+
+	/* IIC2 reaches the LT8912B HDMI bridge at its reset-default mux 0.
+	 * External I2C pull-ups live on the badge, so no bias-pull-up. This used
+	 * to be ARM-only, the display stack now comes up on both cores, and
+	 * without it the riscv side can drive DSI but never programs the bridge. */
+	iic2_cfg: iic2-cfg {
+		iic2-pins {
+			pinmux = <PINMUX(SG2000_IIC2_SCL, 0)>, /* bridge SCL, J13 */
+				 <PINMUX(SG2000_IIC2_SDA, 0)>; /* bridge SDA, J14 */
+			power-source = <1800>;
+		};
+	};
+
+	emmc_cfg: emmc-cfg {
+		emmc-clk-pins {
+			pinmux = <PINMUX(SG2000_EMMC_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+
+		emmc-cmd-pins {
+			pinmux = <PINMUX(SG2000_EMMC_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		emmc-data-pins {
+			pinmux = <PINMUX(SG2000_EMMC_DAT0, 0)>,
+				 <PINMUX(SG2000_EMMC_DAT1, 0)>,
+				 <PINMUX(SG2000_EMMC_DAT2, 0)>,
+				 <PINMUX(SG2000_EMMC_DAT3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		emmc-rstn-pins {
+			pinmux = <PINMUX(SG2000_EMMC_RSTN, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	sdhci0_cfg: sdhci0-cfg {
+		sdhci0-clk-pins {
+			pinmux = <PINMUX(SG2000_SD0_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+
+		sdhci0-cmd-pins {
+			pinmux = <PINMUX(SG2000_SD0_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-data-pins {
+			pinmux = <PINMUX(SG2000_SD0_D0, 0)>,
+				 <PINMUX(SG2000_SD0_D1, 0)>,
+				 <PINMUX(SG2000_SD0_D2, 0)>,
+				 <PINMUX(SG2000_SD0_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-cd-pins {
+			pinmux = <PINMUX(SG2000_SD0_CD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* SPI3 for the WS2812 ring, mux 5 on the VIVO pads. Each subnode needs
+	 * power-source: the mainline sophgo pinctrl rejects a pinmux subnode
+	 * without it and fails pinctrl_bind_pins before dw_spi_mmio_probe runs. */
+	spi3_cfg: spi3-cfg {
+		/* Match the arm spi3_cfg exactly: no drive-strength (leave SCK/SDO at
+		 * default, suits push-pull), bias-pull-up on SDI and the GPIO-mode CS so
+		 * the CS pad does not float between transfers (a floating CS gates
+		 * garbage into the WS2812 chain through the U10 and gate). */
+		spi3-sck-pins {
+			pinmux = <PINMUX(SG2000_VIVO_D6, 5)>;
+			power-source = <3300>;
+		};
+
+		spi3-sdo-pins {
+			pinmux = <PINMUX(SG2000_VIVO_D8, 5)>;
+			power-source = <3300>;
+		};
+
+		spi3-sdi-pins {
+			pinmux = <PINMUX(SG2000_VIVO_D7, 5)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+
+		/* CS is a GPIO here, not SPI3_CS. Mux 3 is XGPIOB_16; mux 5 would be
+		 * SPI3_CS. U10 gates LED_DIN with CS through an and gate and needs CS
+		 * active-high, which the native DW CS cannot do. See the cs-gpios comment
+		 * on &spi3 (nix-badge.dtsi). */
+		spi3-cs-pins {
+			pinmux = <PINMUX(SG2000_VIVO_D5, 3)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+};
+
+/* SPI3 drives the WS2812 LED ring through spidev. cv180x.dtsi already declares
+ * the controller (spi@41b0000) with its clocks, interrupt and RST_SPI3 reset;
+ * it is only disabled. Enable it below. */
+&spi3 {
+	/* Slave DMA via the cv1800b dmamux so the CPU no longer hand-refills the SPI
+	 * TX FIFO (PIO underruns when a hardirq preempts the refill mid-frame and the
+	 * WS2812 chain glitches under load). Cells: TX req 23, RX req 22; the 2nd
+	 * dmamux cell is the CPU (1 = C906 on this riscv core, vs 0 = CA53 on arm).
+	 * &dmac must use sophgo,cv1800b-axi-dma (ARG0_AS_CHAN) so of_xlate takes the
+	 * mux-allocated channel, not the apb_regs handshake path this SoC lacks.
+	 * Everything else (num-cs, cs-gpios, pinctrl, spidev@0, the Sharp display@1,
+	 * status) is shared in nix-badge.dtsi. */
+	dmas = <&dmamux 23 1>, <&dmamux 22 1>;
+	dma-names = "tx", "rx";
+};
+
+/*
+ * GPIO line names, so gpioinfo reads as a wiring diagram instead of a list of
+ * numbers.
+ *
+ * Names only. This sets no direction, no pull and no pad mux, so it cannot
+ * change board behaviour. Every consumer still claims its own line.
+ *
+ * porta and portb are XGPIOA and XGPIOB. The board also uses a porte
+ * (PWR_GPIO, the RTC domain block at 0x05021000) for the USER button and the
+ * HDMI I2C pads. Mainline has no such controller node and pinctrl-sg2000.h
+ * names only PWR_GPIO0..2, so those lines are not representable here.
+ */
+&porta {
+	gpio-line-names =
+		"",                  /* 0  CAM_MCLK0 (pin 12, NC) */
+		"hdmi-5v-fault-n",   /* 1  U19 /FAULT */
+		"", "", "", "", "", "",
+		"", "",
+		"",                  /* 10 SD_D1 */
+		"", "",
+		"sd-cd-n",           /* 13 SD card detect */
+		"",
+		"wifi-poweron",      /* 15 on-module AIC8800 */
+		"",                  /* 16 UART0_TX */
+		"",
+		"jtag-tck",          /* 18 */
+		"jtag-tms",          /* 19 */
+		"jtag-trst",         /* 20 */
+		"", "", "", "", "", "", "",
+		"jtag-tdi",          /* 28 v1A datasheet swaps TDI/TDO */
+		"jtag-tdo",          /* 29 */
+		"usb-5v-fault-n",    /* 30 U5 /FAULT */
+		"";
+};
+
+&portb {
+	gpio-line-names =
+		"pwm0-buck",         /* 0 */
+		"adc3-j6",           /* 1  SARADC ch3 */
+		"adc-vbat",          /* 2  SARADC ch2 */
+		"adc-vsel",          /* 3  SARADC ch1 */
+		"btn-boot-n",        /* 4  S1, also the ROM recovery strap */
+		"usb-host-vbus-en",  /* 5  wired-AND with SERIAL_VBUS */
+		"usb-vbus-det",      /* 6 */
+		"", "", "", "",
+		"core-sel-latch-clk",/* 11 U2 74AUP1G175 CP */
+		"core-sel-latch-d",  /* 12 1=ARM, 0=RISC-V on next boot */
+		"",                  /* 13 SPI3_SDO, LED chain via U10 */
+		"",                  /* 14 SPI3_SDI */
+		"",                  /* 15 SPI3_SCK */
+		"",                  /* 16 SPI3_CS, gates LED_DIN via U10 */
+		"sao-sda",           /* 17 IIC1 through U12 TXS0104E */
+		"sao-scl",           /* 18 IIC1 */
+		"sao-gpio2",         /* 19 */
+		"sao-fault-n",       /* 20 U13 /FAULT */
+		"sao-power-en",      /* 21 U13 EN + U12 OE */
+		"sd-fault-n",        /* 22 U8 /FAULT */
+		"core-sel-strap",    /* 23 readback: 1=RISC-V, 0=ARM */
+		"", "", "", "", "", "", "", "";
+};
+
+/* Console UART */
+&uart0 {
+	pinctrl-0 = <&uart0_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* Internal eMMC (mmc@4300000): the eMMC root medium, same shape as the arm DTS. The
+ * mainline node has no pinctrl; mux 0 is the eMMC function on all seven pads. */
+&{/soc/mmc@4300000} {
+	pinctrl-0 = <&emmc_cfg>;
+	pinctrl-names = "default";
+	bus-width = <4>;
+	no-1-8-v;
+	cap-mmc-hw-reset;
+	no-sd;
+	no-sdio;
+	non-removable;
+	status = "okay";
+};
+
+/* SD card (rootfs on NIXOS_RISCV label) */
+&sdhci0 {
+	pinctrl-0 = <&sdhci0_cfg>;
+	pinctrl-names = "default";
+	bus-width = <4>;
+	no-1-8-v;
+	no-mmc;
+	no-sdio;
+	disable-wp;
+	status = "okay";
+};
+
+/* On-chip 10/100 Ethernet: SG2000 internal EPHY to the RJ45 magnetics, no
+ * external PHY. Set phy-mode = "internal" with the internal EPHY handle and
+ * enable the MAC and MDIO. Mirrors mainline cv1812h-huashan-pi.dts.
+ * Note: mainline 7.0.x has no driver to power or init the internal EPHY, so
+ * eth0 registers but does not link until the EPHY is initialized (in U-Boot or
+ * a kernel driver). The DT is ready for that. */
+&gmac0 {
+	status = "okay";
+	phy-mode = "internal";
+	phy-handle = <&internal_ephy>;
+
+	/* Claim the RJ45 link/speed LED pads at MAC probe, they are the internal
+	 * EPHY's own hardware LED outputs. See ephy_led_cfg below (and the ARM DTS
+	 * for the full mechanism/root-cause). */
+	pinctrl-names = "default";
+	pinctrl-0 = <&ephy_led_cfg>;
+};
+
+/*
+ * RJ45 LED indication: the two jack LEDs are the internal EPHY's hardware LED
+ * outputs on RTC-domain pads N12 (green/LINK = EPHY_LNK_LED) and P13 (orange/
+ * speed = EPHY_SPD_LED), buffered by NMOS (lit = pad high). Unmuxed, they sit
+ * at their fsel-0 reset pulls (N12 down -> green off, P13 up -> orange solid),
+ * which is the observed fault. fsel 6 hands each pad to its EPHY LED function;
+ * power-source = 1800 is mandatory (IO_TYPE_1V8_ONLY RTC pads, omitting it
+ * -EINVALs the whole state and would fail gmac0 probe). See the ARM DTS for why
+ * a `leds` subnode / vendor LED-mode / gpio-leds are all unavailable here.
+ */
+&pinctrl {
+	ephy_led_cfg: ephy-led-cfg {
+		ephy-led-pins {
+			pinmux = <PINMUX(SG2000_PWR_WAKEUP0, 6)>, /* N12 -> EPHY_LNK_LED (green/LINK)  */
+				 <PINMUX(SG2000_PWR_BUTTON1, 6)>; /* P13 -> EPHY_SPD_LED (orange/SPEED) */
+			power-source = <1800>;
+		};
+	};
+};
+
+&mdio {
+	status = "okay";
+};
+
+/*
+ * USB: SG2002/SG2000 DWC2 OTG core on the Type-C debug/power port (where the
+ * DWC2 D+/D- actually come out). dr_mode = "otg" (was "host"); see the ARM
+ * DTS for the full rationale. The port's role is software-selected via
+ * USB_DATA_HOST = USB_VBUS_EN = portb 5 (usb_vbus below): sourcing VBUS (VBUS_EN
+ * high) is the only way the badge can be host, so VBUS_EN low = device. usb_vbus
+ * is therefore not regulator-boot-on, VBUS_EN starts low, the port defaults to
+ * device (the CDC-NCM gadget), and a host on a C-to-C cable is the only 5V
+ * present so dwc2 comes up B-device and enumerates. It stays vbus-supply of &usb
+ * so dwc2 can raise VBUS_EN for host mode on a later role toggle, not at boot.
+ */
+/ {
+	usb_vbus: regulator-usb-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&portb 5 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+/*
+ * USB: dr_mode = "peripheral", pure device, the only stable config on
+ * this board. dr_mode="otg" is unusable here: any role switch (an autonomous
+ * gpio-usb-b-connector OR a manual `echo device > .../role`) makes dwc2's OTG
+ * state machine churn, because USB_VBUS_DET is self-referential to USB_VBUS_EN,
+ * and kworker/u4 (the dwc2 OTG work) soft-locks CPU#0, bench-proven three
+ * times. In "peripheral" dwc2 has no host controller and no OTG state machine,
+ * never sources VBUS (usb_vbus regulator has no consumer -> USB_VBUS_EN stays
+ * low), and its own PHY VBUS comparator sees only an external host's VBUS: plug
+ * the Type-C into a PC and the CDC-NCM gadget (nix-badge-usb-gadget) enumerates
+ * automatically; unplug and it idles. Trade-off: this port can never be a USB
+ * host. Making it switchable would need an independent host-detect signal (a
+ * Type-C CC pin on its own GPIO, say) to break the VBUS self-reference, check
+ * the schematic; not wired to the driver today.
+ */
+&usb {
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+/*
+ * WiFi SDIO bus pads. The mmc@4320000 controller uses the SD1 pads
+ * (SG2000_SD1_*, mux 0 = SDIO1, same scheme as the SD0 pads for the card).
+ * Without this mux the pads stay on their default function and the AIC8800
+ * never answers the SDIO probe.
+ */
+&pinctrl {
+	sdhci1_cfg: sdhci1-cfg {
+		/* 1.8V pads. The AIC8800 VIO is fixed 1.8V; sdhci-cv181x drives the rail. */
+		sdhci1-clk-pins {
+			pinmux = <PINMUX(SG2000_SD1_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <1800>;
+		};
+
+		sdhci1-cmd-pins {
+			pinmux = <PINMUX(SG2000_SD1_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+
+		sdhci1-data-pins {
+			pinmux = <PINMUX(SG2000_SD1_D0, 0)>,
+				 <PINMUX(SG2000_SD1_D1, 0)>,
+				 <PINMUX(SG2000_SD1_D2, 0)>,
+				 <PINMUX(SG2000_SD1_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+	};
+};
+
+/*
+ * VIP display interrupts. Per-arch, so they live in the leaf .dts
+ * rather than the shared dtsi: the A53 routes these through the GIC, the C906
+ * through the PLIC.
+ *
+ * The vendor cv181x_base_arm.dtsi gives the scaler IRQ as GIC_SPI 9. Mainline
+ * spells the same SoC peripheral number two ways, arm64/sophgo/sg2000.dtsi
+ * defines SOC_PERIPHERAL_IRQ(nr) as GIC_SPI (nr), riscv sg2002.dtsi as
+ * ((nr) + 16), so SoC IRQ 9 is PLIC source 25 here. (Cross-checked against
+ * i2c0, which is GIC_SPI 33 in the vendor tree and SOC_PERIPHERAL_IRQ(33) in
+ * mainline.)
+ *
+ * Without this, vpss's _init_resources() fails platform_get_irq_byname(pdev,
+ * "sc"), returns -ENODEV, and probe carries on to dereference a NULL scaler
+ * register base.
+ */
+&cvi_vpss {
+	interrupts = <25 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "sc";
+};
+
+/*
+ * Video-codec interrupts, the riscv half of the split described on
+ * &cvi_vpss above: sg2002.dtsi defines SOC_PERIPHERAL_IRQ(nr) as ((nr) + 16),
+ * so the vendor's arm GIC_SPI 6/5/7 and 4 become PLIC 22/21/23 and 20.
+ * cviCfgIrq() resolves them by name, so the names are what matter.
+ */
+&vcodec {
+	interrupts = <22 IRQ_TYPE_LEVEL_HIGH>,
+		     <21 IRQ_TYPE_LEVEL_HIGH>,
+		     <23 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "h265", "h264", "sbm";
+};
+
+&jpu {
+	interrupts = <20 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "jpeg";
+};
+
+/*
+ * IIS2 to the LT8912B. Same three pads as the ARM side, but expressed
+ * with this file's own PINPOS macros: the riscv build uses the sg2002
+ * pinctrl header, where pins are flat indices rather than SG2000 row/column
+ * coordinates (PIN_AUD_AINL_MIC is 2 on sg2002 and PINPOS('H',1) on sg2000).
+ *
+ * No dmas override here, the inherited cell (1 = DMA_CPU_C906_0) is already
+ * correct for this core.
+ */
+#define SG2000_AUD_AINL_MIC	PINPOS('H', 1)
+#define SG2000_AUD_AOUTL		PINPOS('F', 2)
+#define SG2000_AUD_AOUTR		PINPOS('G', 2)
+
+&pinctrl {
+	iis2_cfg: iis2-cfg {
+		iis2-pins {
+			pinmux = <PINMUX(SG2000_AUD_AINL_MIC, 5)>, /* IIS2_BCLK -> U16.60 */
+				 <PINMUX(SG2000_AUD_AOUTL,    5)>, /* IIS2_LRCK -> U16.59 */
+				 <PINMUX(SG2000_AUD_AOUTR,    5)>; /* IIS2_DO   -> U16.58 */
+			power-source = <1800>;
+		};
+	};
+};
+
+/*
+ * The DSI host soph_drm registers, and the graph edge the HDMI bridge
+ * attaches to. Same node as the ARM tree's: it owns no registers (the DISP
+ * and DSI MAC blocks belong to cv181x_vpss, which soph_drm drives through
+ * that driver's exported helpers) and has no interrupts or clocks, so nothing
+ * in it is arch-specific. It exists for identity: a mipi_dsi_host is found by
+ * its of_node, so without it the bridge has nothing to attach to.
+ *
+ * data-lanes = <1 2>: two lanes. The D2/D3 differential pair is dead on
+ * this board, and four locks sync but shows nothing.
+ */
+&{/soc} {
+	soph_dsi: dsi {
+		compatible = "badge,sg2000-soph-dsi";
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				soph_dsi_out: endpoint {
+					data-lanes = <1 2>;
+					remote-endpoint = <&lt8912b_in>;
+				};
+			};
+		};
+	};
+};
+
+/*
+ * LT8912B DSI->HDMI bridge on i2c2 and the HDMI connector it drives. The
+ * bus is enabled in nix-badge.dtsi with this file's iic2_cfg (mux 0); the
+ * vendor mipi_tx/vo panel GPIOs that would re-mux those pads stay out of the
+ * tree. The bridge is status="disabled" here, re-enabled by the usbHost DTB.
+ */
+#include "lt8912b-bridge.dtsi"

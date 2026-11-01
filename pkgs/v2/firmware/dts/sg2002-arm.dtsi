@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The SG2002 as its A53 sees it: the kernel's arm64 sg2000.dtsi (the A53, GIC, timer,
+ * PSCI and PMU on the shared cv18xx base) with what the kernel's riscv sg2002.dtsi
+ * changes for the SG2002, the same die in a smaller package: its pin controller, clock
+ * and SD compatibles, 256 MiB, and the C906L region at the top of it. Then the A53
+ * fixes the badge's ARM DTS carries.
+ */
+
+#include <dt-bindings/pinctrl/pinctrl-sg2002.h>
+#include "sg2000.dtsi"
+
+/delete-node/ &coprocessor_rtos;
+
+/ {
+	compatible = "sophgo,sg2002";
+
+	memory@80000000 {
+		reg = <0x80000000 0x10000000>;
+	};
+
+	reserved-memory {
+		coprocessor_rtos: region@8fe00000 {
+			reg = <0x8fe00000 0x200000>;
+			no-map;
+		};
+	};
+};
+
+&pinctrl {
+	compatible = "sophgo,sg2002-pinctrl";
+};
+
+&clk {
+	compatible = "sophgo,sg2002-clk", "sophgo,sg2000-clk";
+};
+
+&sdhci0 {
+	compatible = "sophgo,sg2002-dwcmshc";
+};
+
+&osc {
+	clock-frequency = <25000000>;
+};
+
+/*
+ * Reboot: BL31 does not implement PSCI SYSTEM_RESET, so dw_wdt's restart handler resets
+ * the SoC (see the badge's ARM DTS). Its timer clock is CLK_APB_WDT.
+ */
+&wdt {
+	reg = <0x03010000 0x1000>;
+	clocks = <&clk CLK_APB_WDT>;
+};
+
+/* The DMA controller as on the C906 (sg200x-riscv.dtsi): the dmamux's channels. */
+&dmac {
+	compatible = "sophgo,cv1800b-axi-dma";
+	status = "okay";
+};

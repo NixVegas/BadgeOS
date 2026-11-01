@@ -1,0 +1,10 @@
+// badge-coda-cube: a local, active user may start and stop coda-cube on
+// their own session (badge-coda-cube@USER.service), and nothing else.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "badge-coda-cube@" + subject.user + ".service" &&
+        (action.lookup("verb") == "start" || action.lookup("verb") == "stop") &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,718 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Device tree for the Milk-V Duo S (Sophgo SG2000, aarch64 ARM Cortex-A53).
+ *
+ * Based on mainline sg2000-milkv-duo-module-01-evb.dts.
+ *
+ * The Duo S uses the SG2000 SoM (Module 01) with a carrier board. This DTS
+ * reuses the Module 01 DTSI, which enables eMMC, the sdhci1/WiFi stubs, and
+ * aliases. It then adds the nodes that the Duo S carrier contributes:
+ *   - uart0, enabled.
+ *   - sdhci0, enabled for the SD card root.
+ *   - chosen stdout-path for the ttyS0 console.
+ *   - Ethernet: SG2000 internal EPHY (phy-mode = "internal"). The carrier has
+ *     no external PHY. The DTSI sets phy-handle=<&internal_ephy> and
+ *     phy-mode="internal". This DTS enables the MAC and MDIO.
+ *   - USB: the usb node, enabled with dr_mode = "host". The carrier exposes a
+ *     USB-A host port. GPIO portb pin 5 (USB_VBUS_EN) gates the port VBUS.
+ *
+ * Carrier nodes that are omitted:
+ *   - LEDs and GPIO buttons: carrier-specific, not in the mainline sg2000 DTSI.
+ *   - Camera/CSI: the ISP nodes are not in the mainline sg2000 DTSI.
+ */
+
+/dts-v1/;
+#include "sg2000-milkv-duo-module-01.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include "sg2000-module-01.dtsi"
+#include "sg200x-vip.dtsi"
+#include "nix-badge.dtsi"
+
+/ {
+	model = "Milk-V Duo S";
+	compatible = "milkv,duo-s", "sophgo,sg2000";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+};
+
+/*
+ * SoC reset for userspace `reboot`.
+ *
+ * The mainline sg2000.dtsi has no watchdog node, so mainline Linux registers
+ * no restart handler for this SoC other than PSCI. The inherited /psci node
+ * (arm,psci-0.2, method "smc") routes machine_restart to SYSTEM_RESET in BL31.
+ * The SG2000 BL31 blob does not implement SYSTEM_RESET. The SMC returns and
+ * machine_restart() spins forever after printing "reboot: Restarting system".
+ *
+ * The fix is to expose the CV1800B/SG2000 Synopsys DesignWare watchdog. The
+ * mainline dw_wdt driver (CONFIG_DW_WDT) registers a restart handler at
+ * priority 128. Its dw_wdt_restart() programs the shortest timeout in RESET
+ * response mode and kicks the counter. This asserts the SoC watchdog-reset line.
+ *
+ * The watchdog reset output is gated in the always-on RTC block by
+ * RTC_EN_WDT_RST_REQ (0x050260E0). The vendor FSBL (sophgo/fsbl plat/cv181x,
+ * built by pkgs/firmware/fsbl.nix) writes 0x050260E0 = 1 in early platform
+ * init. A watchdog timeout then propagates to a full SoC reset. Mainline Linux
+ * does not clear that bit, so the watchdog restart handler resets the SoC.
+ *
+ * Node facts:
+ *   - base 0x03010000, size 0x1000: from the vendor cv181x_base.dtsi
+ *     "cv-wd@0x3010000" (compatible "snps,dw-wdt") and vendor u-boot
+ *     WATCHDOG_BASE = TOP_BASE + 0x10000 = 0x03000000 + 0x10000.
+ *   - clock CLK_APB_WDT (58): the mainline sophgo clk driver registers the
+ *     clk_apb_wdt gate off the 25 MHz osc, matching the vendor
+ *     CONFIG_DW_WDT_CLOCK_KHZ 25000. dw_wdt takes the first unnamed clock
+ *     (devm_clk_get_enabled(dev, NULL)) as its timer clock.
+ * `resets` is omitted. dw_wdt treats it as optional and the WDT is already out
+ * of reset from u-boot. This avoids a dependency on the sophgo,cv1800b-reset
+ * driver being built in.
+ */
+/* The mainline sg2000.dtsi gives the soc node no label, so merge by full path. */
+/ {
+	/* The SPI core sets bus_num from of_alias_get_id(node, "spi") and falls
+	 * back to dynamic numbering when no alias matches. This alias fixes the
+	 * controller to bus 3, so the device is /dev/spidev3.0 and not
+	 * /dev/spidev0.0. */
+	aliases {
+		spi3 = &spi3;
+	};
+
+	soc {
+		watchdog@3010000 {
+			compatible = "snps,dw-wdt";
+			reg = <0x03010000 0x1000>;
+			clocks = <&clk CLK_APB_WDT>;
+		};
+
+		/* Reset controller. reset-simple handles sophgo,cv1800b-reset. The
+		 * mainline sg2000.dtsi omits it. SPI3 comes up held in reset on the
+		 * ARM core, so its register access stalls the dw_spi probe until the
+		 * driver deasserts RST_SPI3. */
+		rst: reset-controller@3003000 {
+			compatible = "sophgo,cv1800b-reset";
+			reg = <0x03003000 0x1000>;
+			#reset-cells = <1>;
+		};
+
+		/* SPI3 (DesignWare APB SSI) drives the WS2812 ring + Sharp panel. The
+		 * controller (compatible/reg/clocks/resets) is inherited from the base
+		 * cv180x.dtsi; the shared device config (num-cs, cs-gpios, pinctrl,
+		 * spidev@0, display@1, status) lives in nix-badge.dtsi. This node carries
+		 * only the arm-specific bits:
+		 *   - interrupts: the GIC 3-cell form (the base's 2-cell PLIC form is wrong
+		 *     under the arm64 GIC), so override it here.
+		 *   - dmas: cv1800b dmamux slave DMA so the CPU no longer hand-refills the
+		 *     TX FIFO (PIO underruns when a hardirq preempts the refill and the
+		 *     WS2812 chain glitches under load). Cells: TX req 23, RX req 22; 2nd
+		 *     cell = CPU (0 = CA53). &dmac must be sophgo,cv1800b-axi-dma
+		 *     (ARG0_AS_CHAN). RST_SPI3 (base `resets`) needs RESET_SIMPLE, enabled
+		 *     in the shared base.nix. */
+		spi3: spi@41b0000 {
+			interrupts = <SOC_PERIPHERAL_IRQ(41) IRQ_TYPE_LEVEL_HIGH>;
+			dmas = <&dmamux 23 0>, <&dmamux 22 0>;
+			dma-names = "tx", "rx";
+		};
+	};
+};
+
+/*
+ * DMA controller for SPI3 slave DMA (see the &spi3 dmas above). The base
+ * cv180x.dtsi gives it the generic snps,axi-dma-1.01a compatible, which lacks
+ * ARG0_AS_CHAN, so dw_axi_dma_of_xlate would take the apb_regs handshake path
+ * this SoC never wires up ("apb_regs not initialized"). sophgo,cv1800b-axi-dma
+ * sets ARG0_AS_CHAN, so of_xlate uses the channel the dmamux allocated. The
+ * dmamux (dma-router@154) lives in the always-on top syscon and is already live.
+ */
+&dmac {
+	compatible = "sophgo,cv1800b-axi-dma";
+	status = "okay";
+};
+
+/*
+ * Pin configuration for the SD0 and UART0 pads. The pinmux matches the EVB
+ * carrier.
+ */
+&pinctrl {
+	/* SPI3 on the 40-pin header (pads VIVO_D5..D8, mux 5). The VIVO pads are
+	 * 3.3V on the carrier, so power-source = <3300>. power-source is required:
+	 * the mainline sophgo pinctrl (cv1800_dt_node_to_map_post) returns -EINVAL
+	 * for any pinmux subnode that omits it. That fails pinctrl_bind_pins in
+	 * really_probe before dw_spi_mmio_probe runs (silent EINVAL, no dev_err). */
+	spi3_cfg: spi3-cfg {
+		/* No bias-disable. The mainline sophgo pinctrl (sophgo_pconf_set)
+		 * supports pull-up, pull-down, and bus-hold, but not BIAS_DISABLE,
+		 * and returns -ENOTSUPP for it. That failure rolls back the whole
+		 * pinctrl state, including the mux, and leaves the pins unclaimed.
+		 * Omitting bias leaves the pad at its default (no pull), which suits
+		 * a push-pull SCK/MOSI. */
+		spi3-sck-pins {
+			pinmux = <PINMUX(PIN_VIVO_D6, 5)>;
+			power-source = <3300>;
+		};
+		spi3-sdo-pins {
+			pinmux = <PINMUX(PIN_VIVO_D8, 5)>;
+			power-source = <3300>;
+		};
+		spi3-sdi-pins {
+			pinmux = <PINMUX(PIN_VIVO_D7, 5)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+		/* CS is a GPIO here, not SPI3_CS. Mux 3 is XGPIOB_16; mux 5
+		 * would be SPI3_CS. The board gates LED_DIN with CS through the
+		 * U10 and gate and needs it active high, which the native DW CS
+		 * cannot do. See the cs-gpios comment on &spi3. */
+		spi3-cs-pins {
+			pinmux = <PINMUX(PIN_VIVO_D5, 3)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+
+	/* Internal eMMC (mmc@4300000). The Module 01 DTSI enables &emmc and shapes it
+	 * correctly, non-removable, no-sd, no-sdio, bus-width 4, cap-mmc-hw-reset,
+	 * but gives it no pinctrl, and mainline has no board that muxes these pads. So
+	 * the controller probed, ADMA came up, and card init failed every boot:
+	 *
+	 *   mmc1: SDHCI controller on 4300000.mmc [4300000.mmc] using ADMA 64-bit
+	 *   mmc1: Failed to initialize a non-removable card
+	 *
+	 * with all seven pads sitting unclaimed in
+	 * /sys/kernel/debug/pinctrl/3001000.pinctrl/pinmux-pins, i.e. the controller's
+	 * signals never reached the chip. (The eMMC was the only enabled controller on
+	 * this board without a pinctrl-0; SD0, SD1 and the VIVO pads all had one.)
+	 *
+	 * mux 0 is the eMMC function. Duo_Module_V1.1_Schematic.pdf lists each pad as
+	 * EMMC / SPINOR / SPINAND / XGPIO in that order, four functions, matching the
+	 * max-mux of 3 the sophgo pinctrl driver records for these pins, and the
+	 * schematic wires them straight to the eMMC:
+	 *   EMMC_DAT[0]/SPINOR_MOSI/SPINAND_MOSI/XGPIOA[25] -> eMMC_D0
+	 *   EMMC_CMD /SPINOR_MISO/SPINAND_MISO/XGPIOA[23]   -> eMMC_CMD
+	 *   EMMC_CLK /SPINOR_SCK /SPINAND_CLK /XGPIOA[22]   -> eMMC_CLK
+	 *   EMMC_RSTN/XGPIOA[21]/AUX2                       -> eMMC_RST_Z
+	 *
+	 * power-source 3300: the schematic shows VDDIO_EMMC at 3v3. The pads are
+	 * IO_TYPE_1V8_OR_3V3, so this is a real choice, not a default, and it is
+	 * consistent with the `no-1-8-v` the Module 01 DTSI already sets on the node.
+	 * Drive strengths mirror sdhci0 below (clk harder than cmd/data), which is the
+	 * combination proven on the SD card.
+	 */
+	emmc_cfg: emmc-cfg {
+		emmc-clk-pins {
+			pinmux = <PINMUX(PIN_EMMC_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+
+		emmc-cmd-pins {
+			pinmux = <PINMUX(PIN_EMMC_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		emmc-data-pins {
+			pinmux = <PINMUX(PIN_EMMC_DAT0, 0)>,
+				 <PINMUX(PIN_EMMC_DAT1, 0)>,
+				 <PINMUX(PIN_EMMC_DAT2, 0)>,
+				 <PINMUX(PIN_EMMC_DAT3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		/* Hardware reset. cap-mmc-hw-reset on the node is only usable if the pad
+		 * is actually muxed to EMMC_RSTN; its reset default is PD->DRV_HI+PD. */
+		emmc-rstn-pins {
+			pinmux = <PINMUX(PIN_EMMC_RSTN, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	sdhci0_cfg: sdhci0-cfg {
+		sdhci0-cd-pins {
+			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-clk-pins {
+			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+
+		sdhci0-cmd-pins {
+			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-data-pins {
+			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
+				 <PINMUX(PIN_SD0_D1, 0)>,
+				 <PINMUX(PIN_SD0_D2, 0)>,
+				 <PINMUX(PIN_SD0_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	uart0_cfg: uart0-cfg {
+		uart0-pins {
+			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
+				 <PINMUX(PIN_UART0_RX, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* SAO connector IIC1 for the SSD1306 OLED (see &i2c1 in nix-badge.dtsi).
+	 * The SAO SDA/SCL are PORTB 17/18 = pads VIVO_D4 / VIVO_D3, IIC1 = pinmux 5
+	 * (found empirically: mux 5 is the only value where 0x3c ACKs). bias-pull-up
+	 * both enables the pad input buffer (so the controller senses SDA/the ACK,
+	 * without it the mux is set but reads NAK) and adds an internal pull that
+	 * parallels the U12 TXS0104E's. power-source is required by the mainline
+	 * sophgo pinctrl or it -EINVALs the whole state (see spi3_cfg). */
+	i2c1_cfg: i2c1-cfg {
+		i2c1-pins {
+			pinmux = <PINMUX(PIN_VIVO_D4, 5)>, /* SAO SDA, portb 17 */
+				 <PINMUX(PIN_VIVO_D3, 5)>; /* SAO SCL, portb 18 */
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+
+	/*
+	 * IIC2 for the LT8912B HDMI bridge. The badge (Duo Module 01) breaks
+	 * the MIPI-DSI lanes straight out to a Lontium LT8912B, whose I2C control
+	 * port (0x48/0x49/0x4a) hangs on IIC2 = pads IIC2_SCL/SDA (chip J13/J14) in
+	 * the RTC power domain. Those pads are IO_TYPE_1V8_ONLY in mainline
+	 * pinctrl-sg2000, so power-source must be 1800, 3300 -EINVALs the whole
+	 * state. Function is mux 0 (matches every sophgo IIC pad, and the upstream
+	 * duo-s board file that enables i2c2 at its reset-default mux).
+	 * External I2C pull-ups live on the badge (no bias-pull-up needed).
+	 *
+	 * The riscv DTS defines the matching iic2_cfg, so &i2c2 itself lives in
+	 * nix-badge.dtsi next to &i2c1, the display stack comes up on both
+	 * cores now, and only the pin-macro names differ between them.
+	 */
+	iic2_cfg: iic2-cfg {
+		iic2-pins {
+			pinmux = <PINMUX(PIN_IIC2_SCL, 0)>, /* HDMI bridge SCL, J13 */
+				 <PINMUX(PIN_IIC2_SDA, 0)>; /* HDMI bridge SDA, J14 */
+			power-source = <1800>;
+		};
+	};
+};
+
+/*
+ * GPIO line names, so gpioinfo reads as a wiring diagram instead of a list of
+ * numbers.
+ *
+ * Names only. This sets no direction, no pull, and no pad mux, so it cannot
+ * change board behaviour. Every consumer still claims its own line.
+ *
+ * porta and portb are XGPIOA and XGPIOB. The board also uses a porte
+ * (PWR_GPIO, the RTC domain block at 0x05021000) for the USER button and the
+ * HDMI I2C pads. Mainline has no such controller node and pinctrl-sg2000.h
+ * names only PWR_GPIO0..2, so those lines are not representable here.
+ */
+&porta {
+	gpio-line-names =
+		"",                  /* 0  CAM_MCLK0 (pin 12, NC) */
+		"hdmi-5v-fault-n",   /* 1  U19 /FAULT */
+		"", "", "", "", "", "",
+		"", "",
+		"",                  /* 10 SD_D1 */
+		"", "",
+		"sd-cd-n",           /* 13 SD card detect */
+		"",
+		"wifi-poweron",      /* 15 on-module AIC8800 */
+		"",                  /* 16 UART0_TX */
+		"",
+		"jtag-tck",          /* 18 */
+		"jtag-tms",          /* 19 */
+		"jtag-trst",         /* 20 */
+		"", "", "", "", "", "", "",
+		"jtag-tdi",          /* 28 v1A datasheet swaps TDI/TDO */
+		"jtag-tdo",          /* 29 */
+		"usb-5v-fault-n",    /* 30 U5 /FAULT */
+		"";
+};
+
+&portb {
+	gpio-line-names =
+		"pwm0-buck",         /* 0 */
+		"adc3-j6",           /* 1  SARADC ch3 */
+		"adc-vbat",          /* 2  SARADC ch2 */
+		"adc-vsel",          /* 3  SARADC ch1 */
+		"btn-boot-n",        /* 4  S1, also the ROM recovery strap */
+		"usb-host-vbus-en",  /* 5  wired-AND with SERIAL_VBUS */
+		"usb-vbus-det",      /* 6 */
+		"", "", "", "",
+		"core-sel-latch-clk",/* 11 U2 74AUP1G175 CP */
+		"core-sel-latch-d",  /* 12 1=ARM, 0=RISC-V on next boot */
+		"",                  /* 13 SPI3_SDO, LED chain via U10 */
+		"",                  /* 14 SPI3_SDI */
+		"",                  /* 15 SPI3_SCK */
+		"",                  /* 16 SPI3_CS, gates LED_DIN via U10 */
+		"sao-sda",           /* 17 IIC1 through U12 TXS0104E */
+		"sao-scl",           /* 18 IIC1 */
+		"sao-gpio2",         /* 19 */
+		"sao-fault-n",       /* 20 U13 /FAULT */
+		"sao-power-en",      /* 21 U13 EN + U12 OE */
+		"sd-fault-n",        /* 22 U8 /FAULT */
+		"core-sel-strap",    /* 23 readback: 1=RISC-V, 0=ARM */
+		"", "", "", "", "", "", "", "";
+};
+
+/* Console UART */
+&uart0 {
+	pinctrl-0 = <&uart0_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * HDMI bridge control bus: LT8912B DSI->HDMI on IIC2 (4020000.i2c).
+/*
+ * HDMI bring-up: a placeholder device the out-of-tree lt8912b-bringup
+ * module binds to, in order to (1) enable the VIP/display clocks through the
+ * mainline clock framework and (2) hand the module the block MMIO. Those clocks
+ * boot gated (clk_summary: clk_axi/disp/dsi_mac/sc_top/disp_src_vip all off) and
+ * reading the VO/DSI/PHY MMIO while gated hangs the SoC, so nothing may touch
+ * those blocks until this node's clocks are on. Not a real DRM binding; it
+ * exists only while we hand-bring the SG2000 DSI path up (site/src/hdmi.md).
+ * ARM-only (the riscv DTB has no display work). reg: scaler top (VO
+ * @+0x8000, DSI MAC @+0xA000), DSI D-PHY wrapper, VIP_SYS clk/reset controller.
+ */
+&{/soc} {
+	hdmi_bringup: hdmi-bringup@a080000 {
+		compatible = "badge,sg2000-hdmi-bringup";
+		reg = <0x0a080000 0xc000>,
+		      <0x0a0d1000 0x1000>,
+		      <0x0a0c8000 0x1000>;
+		reg-names = "scaler", "dsi-phy", "vip-sys";
+		/* The full vendor VIP/display clock set (union of the vendor
+		 * cv181x_base.dtsi vpss + vo + mipi_tx nodes). The earlier 5-clock
+		 * set left the whole 0x0A0xxxxx region hanging on any access despite
+		 * clk_axi_vip being on, because the VIP fabric/subsystem is clocked
+		 * by CLK_SRC_VIP_SYS_0/1/2 (vpss's "clk_sys_0/1/2"), which axi_vip
+		 * (parent sys_3) does not pull in. Enable the vendor's complete list. */
+		clocks = <&clk CLK_AXI_VIP>,
+			 <&clk CLK_SRC_VIP_SYS_0>,
+			 <&clk CLK_SRC_VIP_SYS_1>,
+			 <&clk CLK_SRC_VIP_SYS_2>,
+			 <&clk CLK_IMG_D_VIP>,
+			 <&clk CLK_IMG_V_VIP>,
+			 <&clk CLK_SC_TOP_VIP>,
+			 <&clk CLK_SC_D_VIP>,
+			 <&clk CLK_SC_V1_VIP>,
+			 <&clk CLK_SC_V2_VIP>,
+			 <&clk CLK_SC_V3_VIP>,
+			 <&clk CLK_BT_VIP>,
+			 <&clk CLK_DISP_VIP>,
+			 <&clk CLK_DSI_MAC_VIP>,
+			 <&clk CLK_DISP_SRC_VIP>;
+		clock-names = "axi", "sys0", "sys1", "sys2", "img-d", "img-v",
+			      "sc-top", "sc-d", "sc-v1", "sc-v2", "sc-v3",
+			      "bt", "disp", "dsi-mac", "disp-src";
+		status = "okay";
+	};
+
+	/*
+	 * The DSI host soph_drm registers, and the graph edge the HDMI bridge
+	 * attaches to.
+	 *
+	 * This node owns no registers on purpose, the DISP and DSI MAC
+	 * register blocks belong to cv181x_vpss, and soph_drm drives them
+	 * through that driver's exported helpers rather than mapping them a
+	 * second time. What the node exists for is identity: a mipi_dsi_host is
+	 * found by its of_node, so without one in the tree nothing can be wired
+	 * to it and the bridge has to be poked from userspace instead.
+	 *
+	 * data-lanes = <1 2>: two lanes. The D2/D3 differential pair is dead on
+	 * this board, and four locks sync but shows nothing.
+	 */
+	soph_dsi: dsi {
+		compatible = "badge,sg2000-soph-dsi";
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				soph_dsi_out: endpoint {
+					data-lanes = <1 2>;
+					remote-endpoint = <&lt8912b_in>;
+				};
+			};
+		};
+	};
+};
+
+/* SD card (rootfs on /dev/mmcblk0, NIXOS_ARM label) */
+&sdhci0 {
+	bus-width = <4>;
+	no-1-8-v;
+	no-mmc;
+	no-sdio;
+	disable-wp;
+	pinctrl-0 = <&sdhci0_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* On-chip 10/100 Ethernet: SG2000 internal EPHY straight to the RJ45 magnetics.
+ * The carrier has no external PHY. phy-mode is set to "internal" with the
+ * internal EPHY handle. Note: mainline 7.0.x has no driver to power or init the
+ * internal EPHY (no cv1800b dwmac glue, no EPHY phy driver), so eth0 registers
+ * but does not link until the EPHY is initialized (for example in U-Boot) or a
+ * kernel driver lands. */
+&gmac0 {
+	status = "okay";
+	phy-mode = "internal";
+	phy-handle = <&internal_ephy>;
+
+	/* Claim the RJ45 link/speed LED pads at MAC probe, they are the internal
+	 * EPHY's own hardware LED outputs, so the ethernet controller is their
+	 * natural owner. See ephy_led_cfg below for the full mechanism. */
+	pinctrl-names = "default";
+	pinctrl-0 = <&ephy_led_cfg>;
+};
+
+/*
+ * RJ45 LED indication. The two jack LEDs are driven by the SG2000 internal
+ * EPHY's hardware LED outputs, brought out on two RTC-domain pads and buffered
+ * to the jack by N-channel MOSFETs (LED lit when the pad is driven high). From
+ * duo_s_SCH_v1.1.pdf sheet 8 x SG2000-PINOUT.xlsx:
+ *   green = LINK  <- EPHY_LNK_LED <- ball N12 = PWR_WAKEUP0, fsel 6
+ *   orange = speed<- EPHY_SPD_LED <- ball P13 = PWR_BUTTON1, fsel 6
+ * Nothing (U-Boot or kernel) muxes these pads to the EPHY, so they sit at their
+ * fsel-0 reset default: N12 pulls down -> green off, P13 pulls UP -> orange
+ * solid, exactly the observed fault. The LEDs never reach the EPHY, so they
+ * never reflect link/speed.
+ *
+ * The pinmux is the only mainline-native lever here: a `leds` subnode on
+ * &internal_ephy is silently ignored (it binds the generic C22 PHY driver,
+ * which has no LED ops, so of_phy_leds() skips it), there is no sophgo EPHY LED
+ * register driver in mainline (the LED controller lives behind 0x3009000/
+ * 0x3009800, touched only by U-Boot / the vendor driver), and there is no
+ * RTC-domain GPIO controller node for gpio-leds to reach the pads. fsel 6 = the
+ * EPHY LED function on both pads (verified against SG2000-PINOUT.xlsx and the
+ * mainline pinctrl-sg2000 mux offsets; max_fmux=7). power-source = 1800 is
+ * mandatory: the RTC pads are IO_TYPE_1V8_ONLY and cv1800_dt_node_to_map_post
+ * returns -EINVAL without it, which would drop the whole state (and, since
+ * gmac0 now carries this pinctrl-0, fail gmac0 probe, so this must be right).
+ *
+ * Note (bench): this hands the pads to the EPHY LED outputs. It lights the LEDs
+ * correctly only if U-Boot leaves the EPHY's internal LED controller enabled.
+ * If not, the contingency is an LED-register enable in U-Boot, not DTS. The
+ * symptom (both LEDs at their pad reset-pull states) favors "just unmuxed",
+ * i.e. this pinmux being the actual fix.
+ */
+&pinctrl {
+	ephy_led_cfg: ephy-led-cfg {
+		ephy-led-pins {
+			pinmux = <PINMUX(PIN_PWR_WAKEUP0, 6)>, /* N12 -> EPHY_LNK_LED (green/LINK)  */
+				 <PINMUX(PIN_PWR_BUTTON1, 6)>; /* P13 -> EPHY_SPD_LED (orange/SPEED) */
+			power-source = <1800>;
+		};
+	};
+};
+
+&mdio {
+	status = "okay";
+};
+
+/*
+ * USB: SG2000 DWC2 OTG core on the Type-C debug/power port (this is where the
+ * DWC2 D+/D- come out, not the USB-A, despite older comments).
+ *
+ * dr_mode = "otg" (was "host"), and the port's role is software-selected,
+ * not ID-pin sensed: USB_DATA_HOST = USB_VBUS_EN = portb 5 (the usb_vbus
+ * regulator) both gates whether the badge sources 5V and, by that, whether it
+ * is host. VBUS present + VBUS_EN high => the badge sources VBUS => host; that
+ * is the only way it can source, since on battery the rail is ~4.5V. To be a
+ * device the badge must not source: VBUS_EN low, then the host's VBUS on a
+ * C-to-C cable is the only 5V present and dwc2 comes up B-device/peripheral and
+ * enumerates the gadget.
+ *
+ * So usb_vbus is deliberately not regulator-boot-on: VBUS_EN starts low, i.e.
+ * the port defaults to device (the CDC-NCM gadget). Measured before this:
+ * with boot-on, VBUS_EN latched high at boot, the badge sourced VBUS, dwc2
+ * committed to A-device (usb1 root hub up) and the bound gadget sat "not
+ * attached", the PC saw nothing (two hosts facing each other). It stays
+ * vbus-supply of &usb, so dwc2 can still raise VBUS_EN for host mode when a
+ * host session is requested (a manual/role toggle), rather than at boot.
+ */
+/ {
+	usb_vbus: regulator-usb-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&portb 5 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+/*
+ * USB: dr_mode = "peripheral", pure device, the only stable config on
+ * this board. dr_mode="otg" is unusable here: any role switch (an autonomous
+ * gpio-usb-b-connector OR a manual `echo device > .../role`) makes dwc2's OTG
+ * state machine churn, because USB_VBUS_DET is self-referential to USB_VBUS_EN,
+ * and kworker/u4 (the dwc2 OTG work) soft-locks CPU#0, bench-proven three
+ * times. In "peripheral" dwc2 has no host controller and no OTG state machine,
+ * never sources VBUS (usb_vbus regulator has no consumer -> USB_VBUS_EN stays
+ * low), and its own PHY VBUS comparator sees only an external host's VBUS: plug
+ * the Type-C into a PC and the CDC-NCM gadget (nix-badge-usb-gadget) enumerates
+ * automatically; unplug and it idles. Trade-off: this port can never be a USB
+ * host. Making it switchable would need an independent host-detect signal (a
+ * Type-C CC pin on its own GPIO, say) to break the VBUS self-reference, check
+ * the schematic; not wired to the driver today.
+ */
+&usb {
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+/*
+ * WiFi SDIO bus pads. The mmc@4320000 controller uses the SD1 pads
+ * (PIN_SD1_*, mux 0 = SDIO1, the same scheme as the SD0 pads for the card).
+ * Without this mux the pads stay on their default function and the AIC8800
+ * does not answer the SDIO probe.
+ */
+&pinctrl {
+	/* The AIC8800 SDIO IO (VIO) is fixed 1.8V on this board, so the SoC SD1
+	 * pads must be in the 1.8V IO domain, not 3.3V. With power-source=3300 the
+	 * pad domain mismatches the chip's 1.8V VIO, and the fmac firmware's
+	 * higher-rate SDIO fails to confirm START_APP. Set 1800 to match.
+	 */
+	sdhci1_cfg: sdhci1-cfg {
+		sdhci1-clk-pins {
+			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <1800>;
+		};
+
+		sdhci1-cmd-pins {
+			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+
+		sdhci1-data-pins {
+			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
+				 <PINMUX(PIN_SD1_D1, 0)>,
+				 <PINMUX(PIN_SD1_D2, 0)>,
+				 <PINMUX(PIN_SD1_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+	};
+};
+
+/* Point the eMMC at the pad config above. Everything else about the node comes
+ * from sg2000-milkv-duo-module-01.dtsi, which already enables it and marks it
+ * non-removable / no-sd / no-sdio / cap-mmc-hw-reset with bus-width 4, the
+ * pinmux was the only missing piece. See emmc_cfg for why mux 0 and 3v3. */
+&emmc {
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_cfg>;
+};
+
+/*
+ * VIP display interrupts. These live here rather than in the shared
+ * dtsi because the specifier is arch-specific: GIC on this core, PLIC on the
+ * C906. Numbers are from the vendor cv181x_base_arm.dtsi.
+ *
+ * The vpss driver's _init_resources() does platform_get_irq_byname(pdev, "sc")
+ * and returns -ENODEV if it is missing, so without this the module loads, the
+ * node matches, and probe then dies with a NULL scaler register base.
+ */
+&cvi_vpss {
+	interrupts = <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "sc";
+};
+
+/*
+ * Video-codec interrupts. Same per-arch split as cvi_vpss above: arm64
+ * maps the vendor's SOC_PERIPHERAL_IRQ(nr) to GIC_SPI (nr), so these are the
+ * vendor cv181x_base_arm.dtsi numbers verbatim. cviCfgIrq() looks them up by
+ * name ("h265", "h264", "sbm"), so the order in the list is irrelevant but the
+ * names must match. jpu needs none of this in its own driver, but the vendor
+ * wires one anyway and the hardware does raise it.
+ */
+&vcodec {
+	status = "okay";
+	interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "h265", "h264", "sbm";
+};
+
+&jpu {
+	status = "okay";
+	interrupts = <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "jpeg";
+};
+
+/* The vendor middleware opens this one; H.264 decode is verified on arm. */
+&cvi_vc_drv {
+	status = "okay";
+};
+
+/*
+ * IIS2 to the LT8912B. See the net table in nix-badge.dtsi.
+ *
+ * power-source is required: cv1800_dt_node_to_map_post() returns -EINVAL for
+ * any pinmux subnode that omits it. But these are IO_TYPE_AUDIO pads, for
+ * which stock cv1800_pinconf_compute_config() returns -ENOTSUPP before it
+ * looks at a single parameter, so the pin state can neither omit the
+ * property nor supply it, and i2s2 never probes. That catch-22 is what
+ * pkgs/kernel/patches/sophgo-pinctrl-audio-pads.patch fixes.
+ *
+ * No bias-* or drive-strength here, and not for the usual reason: these pads
+ * are CV1800_FUNC_PIN and have no pin-conf register at all.
+ */
+&pinctrl {
+	iis2_cfg: iis2-cfg {
+		iis2-pins {
+			pinmux = <PINMUX(PIN_AUD_AINL_MIC, 5)>, /* IIS2_BCLK -> U16.60 SCLK_I */
+				 <PINMUX(PIN_AUD_AOUTL,    5)>, /* IIS2_LRCK -> U16.59 WS_I   */
+				 <PINMUX(PIN_AUD_AOUTR,    5)>; /* IIS2_DO   -> U16.58 SD0    */
+			power-source = <1800>;
+		};
+	};
+};
+
+/*
+ * cv180x.dtsi hardcodes every i2s node's DMA consumer to the C906
+ * (`<&dmamux DMA_I2S2_RX 1>`, 1 = DMA_CPU_C906_0). On the A53 that is the
+ * wrong CPU, so override the second cell to 0 (DMA_CPU_A53), exactly what
+ * &spi3 above already does for the same reason. Requests: RX 4, TX 5.
+ */
+&i2s2 {
+	dmas = <&dmamux 4 0>, <&dmamux 5 0>;
+	dma-names = "rx", "tx";
+};
+
+/* LT8912B DSI->HDMI bridge and the HDMI connector it drives. */
+#include "lt8912b-bridge.dtsi"

@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The LicheeRV Nano on its C906: the board (licheerv-nano.dtsi) on the kernel's
+ * sg2002.dtsi, with the C906 fixes (sg200x-riscv.dtsi).
+ */
+
+/dts-v1/;
+#include "sg2002.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/sophgo,cv1800.h>
+#include "sg200x-riscv.dtsi"
+#include "licheerv-nano.dtsi"

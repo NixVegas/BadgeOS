@@ -1,0 +1,376 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Lontium LT8912B MIPI-DSI -> HDMI bridge on the NixVegas badge.
+ *
+ * This replaces the hand-banged i2c bring-up (pkgs/video/soph-display/scripts/
+ * lt-land1281.sh) with a real DT device so the mainline driver probes it:
+ *
+ *   driver:  drivers/gpu/drm/bridge/lontium-lt8912b.c   (linux 7.2.4)
+ *   binding: Documentation/devicetree/bindings/display/bridge/lontium,lt8912b.yaml
+ *   connector driver:  drivers/gpu/drm/bridge/display-connector.c
+ *   connector binding: Documentation/devicetree/bindings/display/connector/hdmi-connector.yaml
+ *
+ * Kernel config (verified against the badge's own arm64 config,
+ * linux-config-aarch64-unknown-linux-gnu-7.2.4):
+ *   CONFIG_DRM_LONTIUM_LT8912B=m   <- the bridge
+ *   CONFIG_DRM_DISPLAY_CONNECTOR=m <- the hdmi-connector node's driver. Not
+ *                                     optional: see "port@1" below.
+ *   CONFIG_DRM_MIPI_DSI=y, CONFIG_DRM_BRIDGE=y
+ * Both are modules, so both must be in the initrd/modules list or be
+ * autoloaded by udev from their OF modalias.
+ *
+ * Assumption about the DSI host (read this first).
+ * The SG2000 DSI host does not exist upstream; it is being added to our own KMS
+ * driver. This fragment does not define it. It only requires that the host
+ * provide one label:
+ *
+ *   soph_dsi_out   - the host's output endpoint node (the endpoint whose
+ *                    remote-endpoint points back at &lt8912b_in).
+ *
+ * The task brief assumed the host exposes its output as port@0/endpoint. That
+ * works, but note the deviation from the usual convention: in-tree DSI hosts
+ * (r8a779g3 dsi0, ti dsi_bridge, imx8m) use port@0 = input from the display
+ * controller and port@1 = output to the sink. Whichever numbering the host
+ * picks, this fragment is indifferent - it only dereferences the *endpoint*
+ * label. Pick the numbering in the host node; do not change anything here.
+ *
+ * Minimum host side (adapt reg/compatible/port numbering as needed):
+ *
+ *   soph_dsi: dsi@a08a000 {
+ *           compatible = "sophgo,sg2000-mipi-dsi";
+ *           ...
+ *           ports {
+ *                   #address-cells = <1>;
+ *                   #size-cells = <0>;
+ *                   port@0 {
+ *                           reg = <0>;
+ *                           soph_dsi_out: endpoint {
+ *                                   remote-endpoint = <&lt8912b_in>;
+ *                                   data-lanes = <1 2>;   // see lanes below
+ *                           };
+ *                   };
+ *           };
+ *   };
+ *
+ * The host must register a struct mipi_dsi_host whose ->dev->of_node is the
+ * soph_dsi node itself: lt8912_parse_dt() does
+ *   lt->host_node = of_graph_get_remote_node(dev->of_node, 0, -1);
+ * (which resolves endpoint -> port -> ports -> the device node) and then
+ * lt8912_attach_dsi() does of_find_mipi_dsi_host_by_node(lt->host_node).
+ * If the host registers its mipi_dsi_host against a child node instead, the
+ * lookup returns NULL and the bridge sits at -EPROBE_DEFER forever.
+ *
+ * The bridge is not a child of the DSI host node. lt8912_attach_dsi() creates
+ * its mipi_dsi_device programmatically with .node = NULL, so the host must not
+ * require a DT child to attach.
+ *
+ * How to include.
+ * Add one line to pkgs/firmware/dts/nix-badge.dtsi (shared by
+ * the ARM and RISC-V board DTS), at the end of the file:
+ *
+ *   #include "lt8912b-bridge.dtsi"
+ *
+ * Include order does not matter: &i2c2 and &soph_dsi_out resolve globally at
+ * dtc time, exactly like the existing &sdhci1_cfg reference documented at the
+ * top of nix-badge.dtsi.
+ *
+ * Caveat: this fragment has a hard forward reference to &soph_dsi_out. If the
+ * DSI host node lands on ARM only (like the current ARM-only hdmi_bringup
+ * node), then including this from nix-badge.dtsi breaks the RISC-V DTB with
+ * an unresolved-phandle error. In that case include it from
+ * sg2000-nix-badge.dts instead until the host exists on both cores. The
+ * fragment itself is arch-neutral - it uses no PIN_* or SG2000_* pin macros, no
+ * clock indices, and no GPIO headers - so it is safe in nix-badge.dtsi the
+ * moment the host is.
+ *
+ * Property by property, and where the requirement comes from.
+ * lontium,lt8912b.yaml ends with exactly:
+ *     required:
+ *       - compatible
+ *       - reg
+ *       - ports
+ *     additionalProperties: false
+ * and inside ports:
+ *     required:
+ *       - port@0
+ *       - port@1
+ * and inside port@0's endpoint:
+ *     required:
+ *       - data-lanes
+ * Everything else the binding lists (reset-gpios, vdd-supply, vccmipirx-supply,
+ * vccsysclk-supply, vcclvdstx-supply, vcchdmitx-supply, vcclvdspll-supply,
+ * vcchdmipll-supply) is optional. "additionalProperties: false" means we may
+ * not invent properties here; any board quirk has to be a driver change.
+ *
+ * reg = <0x48> only. The driver opens 0x49 itself:
+ *   lt8912_init_i2c() -> i2c_new_dummy_device(client->adapter, 0x49)
+ * (lontium-lt8912b.c, I2C_ADDR_MAIN 0x48 / I2C_ADDR_CEC_DSI 0x49). It does not
+ * touch 0x4a in this version - the comment there says "we only initialize 2
+ * chips, but the lt8912 provides a third interface for the audio over HDMI
+ * configuration". So do not add child nodes for 0x49/0x4a; a DT node at 0x49
+ * would make i2c_new_dummy_device() fail with -EBUSY and the probe would die.
+ *
+ * Consequence for HDMI audio: the 0x4a bank is where the LT8912B's
+ * I2S/audio registers live, and nothing in mainline programs it. The existing
+ * simple-audio-card in nix-badge.dtsi is a dummy
+ * spdif-transmitter and does not conflict with this node, but once
+ * lt-land1281.sh is deleted, whatever set up 0x4a must move somewhere else.
+ *
+ * reset-gpios is deliberately absent - see the block below.
+ *
+ * The seven *-supply properties are omitted: the LT8912B's rails on this board
+ * (LT8912_VDD, LT8912_VCCA, LT8912_VCCA_HDMIPLL) are hard-wired to the
+ * always-on +1V8 through ferrites, with no regulator Linux can model. The
+ * driver takes them with devm_regulator_bulk_get(), which hands back dummy
+ * regulators when they are absent, so regulator_bulk_enable() is a no-op. That
+ * is correct here: the part really is always powered.
+ *
+ * Why there is no reset-gpios.
+ * The LT8912B RESET_N pin (U16 pin 64) is not connected to any SG2000 GPIO on
+ * this board. It is an RC power-on reset. Traced in pcb/kicad/hdmi.kicad_sch:
+ * the net off U16.64 at (110.49, 30.48) has exactly three members -
+ *   U16 pin 64 (RESET_N)
+ *   R77  10k/R0402  -> global label LT8912_VDD   (hdmi.kicad_sch:10502, :11986)
+ *   C47  100nF/10V  -> GND #PWR0212              (hdmi.kicad_sch:10342, :15078)
+ * - and carries no label, no hierarchical pin, and no connector pin. tau ~1 ms.
+ * So there is no hardware reset: RESET_N is RC-only (R77 10k / C47 100nF, tau ~ 1 ms)
+ * and LT8912_VDD hangs off the always-on +1V8 via L4, so a hung bridge survives a
+ * warm reboot and needs a full power cycle; omit reset-gpios from the DT node.
+ * Independently: no gpio-line-names entry in any of our three DTS files names a
+ * bridge reset (the only hdmi line is "hdmi-5v-fault-n" on porta 1, which is
+ * U19's /FAULT), and lt-land1281.sh never touches a GPIO - its only reset is
+ * the bridge's own register soft reset (0x48 reg 0x03: 0x7f then 0xff).
+ *
+ * This is fine for the mainline driver, and is the same shape as the in-tree
+ * Olimex MIPI-HDMI adapter our board is derived from
+ * (arch/arm64/boot/dts/renesas/r8a779g3-sparrow-hawk-olimex-dsi-hdmi.dtso,
+ * which also has no reset-gpios):
+ *   - the binding does not list reset-gpios under "required";
+ *   - lt8912_parse_dt() uses devm_gpiod_get_optional(dev, "reset",
+ *     GPIOD_OUT_HIGH), which returns NULL (not an error) when the property is
+ *     absent;
+ *   - lt8912_hard_power_on()/off() then call gpiod_set_value_cansleep(NULL, x),
+ *     which gpiolib treats as a no-op.
+ * So NO patch and NO dummy/fixed GPIO is needed. Do not invent one.
+ *
+ * The operational consequence, unchanged from today: there is no software path
+ * to hard-reset a hung bridge. Recovery is a physical power cycle of the
+ * badge. Budget for that when experimenting with bridge registers.
+ *
+ * Lanes: 2, not 4.
+ * The D2/D3 differential pair is physically dead on this board (schematic nets
+ * are correct; the defect is in the built article). 4-lane locks sync and shows
+ * nothing. data-lanes has two entries, which is all the driver reads:
+ *   lt8912_parse_dt: drm_of_get_data_lanes_count_ep(dev->of_node, 0, -1, 1, 4)
+ *   -> drm_of_get_data_lanes_count -> of_property_count_u32_elems(ep, "data-lanes")
+ * i.e. the count of entries is the lane count; the values are never read by
+ * this driver. Per video-interfaces.yaml the values are physical lane indexes,
+ * so <1 2> is the correct spelling for a 2-lane link whose clock lane sits on
+ * hardware lane 0 - and it is exactly what the in-tree 2-lane user does
+ * (r8a779g3-sparrow-hawk-olimex-dsi-hdmi.dtso: data-lanes = <1 2>).
+ * The count then reaches both ends:
+ *   lt8912_soft_power_on:  regmap_write(regmap[0x49], 0x13, lanes & 3)  -> 0x02
+ *   lt8912_attach_dsi:     dsi->lanes = lt->data_lanes                  -> 2
+ * 0x49:0x13 = 0x02 is byte-identical to the known-good lt-land1281.sh line
+ * (`w $D 0x13 ${LANES_REG:-0x02}`). Put data-lanes = <1 2> on the host endpoint
+ * too, so a host driver that reads its own endpoint agrees.
+ *
+ * Known conflict with our measured setup: hactive 1281.
+ * lt-land1281.sh writes hactive = 1281 (0x49:1c=0x01,1d=0x05) while leaving
+ * h_total = 1650 (0x49:34=0x72,35=0x06). That asymmetry cannot be expressed in
+ * DT or in a drm_display_mode: lt8912_video_setup() derives both from the same
+ * adjusted mode -
+ *     hactive = lt->mode.hactive;  h_total = hactive + hfp + hpw + hbp;
+ * so bumping hdisplay to 1281 also pushes h_total to 1651. There is no DT
+ * property for it and the binding is additionalProperties:false. This fragment
+ * therefore does not attempt it; see the report/handover notes for the options
+ * (a ~6-line driver patch, or re-measuring the shear once the mainline host
+ * drives the link - the 1281 was measured against the vendor VIP DSI MAC, not
+ * against this host).
+ */
+
+/ {
+	/*
+	 * The HDMI connector is mandatory, not decorative. The bridge's port@1
+	 * remote is checked twice in lt8912_parse_dt():
+	 *   port_node = of_graph_get_remote_node(dev->of_node, 1, -1);
+	 *   if (!port_node) ... return -ENODEV;
+	 *   lt->bridge.next_bridge = of_drm_find_and_get_bridge(port_node);
+	 *   if (!lt->bridge.next_bridge) ... return -EPROBE_DEFER;
+	 *   if (!of_device_is_compatible(port_node, "hdmi-connector"))
+	 *           ... return -EINVAL;
+	 * So the remote node must literally carry compatible = "hdmi-connector"
+	 * and have been probed by display-connector.c (which is what registers
+	 * the drm_bridge that of_drm_find_and_get_bridge finds). Without
+	 * CONFIG_DRM_DISPLAY_CONNECTOR loaded, the LT8912B parks at
+	 * -EPROBE_DEFER and never binds.
+	 *
+	 * hdmi-connector.yaml requires exactly: compatible, port, type.
+	 * "label" is optional and only names the connector in logs.
+	 * Note "port" is singular and takes NO reg - it is
+	 * /schemas/graph.yaml#/properties/port, not /properties/ports.
+	 */
+	hdmi_connector: hdmi-connector {
+		compatible = "hdmi-connector";
+		label = "hdmi";
+		type = "a";	/* standard full-size type-A receptacle */
+
+		/*
+		 * ddc-i2c-bus: the HDMI connector's DDC pins are reachable from
+		 * the SoC, on this very bus, so EDID works. Traced in
+		 * pcb/kicad/hdmi.kicad_sch: connector HDMI1 pins 15/16 (DDC
+		 * SCL/SDA) run through U20 (RClamp0524P, whose IN/out pairs are
+		 * now bridged - hdmi.kicad_sch:10492/:9772/:10072) onto nets
+		 * HDMI_SCL/HDMI_SDA, which are the DRAIN (5V) side of two BSS138
+		 * level shifters FET1/FET2 (:12162, :17925; gates to +1V8, 2.2k
+		 * high-side pull-ups R80/R81). Their source (1V8) side is
+		 * I2C_SENSOR1_SDA/SCL, which is simultaneously
+		 *   - Duo Module 01 pins 39/40 (cpu.kicad_sch:2121-2148) = IIC2
+		 *     = 4020000.i2c = /dev/i2c-2, and
+		 *   - LT8912B U16 pins 61/62 "S_SDA"/"S_SCL", its I2C slave
+		 *     control port. (The LT8912B as drawn has NO DDC pins at
+		 *     all; the bridge is not in the EDID path on this board.)
+		 * One physical bus, three sets of devices: SoC master, bridge
+		 * control slave at 0x48/0x49/0x4a, sink EDID EEPROM at 0x50 - no
+		 * address collision. Confirmed on hardware: `i2cdetect -y -r 2`
+		 * shows 0x48/0x49/0x4a/0x4b (LT8912B) + 0x50 (HDMI EDID/DDC),
+		 * see site/src/hdmi.md.
+		 *
+		 * This property belongs here, on the connector, not on the
+		 * bridge: lontium,lt8912b.yaml is additionalProperties:false and
+		 * defines no DDC property. It is display_connector_probe() that
+		 * consumes it:
+		 *   phandle = of_parse_phandle(..., "ddc-i2c-bus", 0);
+		 *   conn->bridge.ddc = of_get_i2c_adapter_by_node(phandle);
+		 *   ...
+		 *   if (conn->bridge.ddc)
+		 *           conn->bridge.ops |= DRM_BRIDGE_OP_EDID | DRM_BRIDGE_OP_DETECT;
+		 * The bridge then borrows it: lt8912_bridge_edid_read() delegates
+		 * to the next bridge when it has DRM_BRIDGE_OP_EDID, and
+		 * otherwise warns "The connected bridge does not supports
+		 * DRM_BRIDGE_OP_EDID" and returns NULL - which makes
+		 * lt8912_connector_get_modes() return 0 and the output come up
+		 * with NO MODES. Dropping this one line costs us every mode.
+		 *
+		 * (of_get_i2c_adapter_by_node() returning NULL gives -EPROBE_DEFER,
+		 * so connector-before-i2c2 ordering resolves itself. There is no
+		 * cycle: i2c2 registers, the bridge defers on the connector, the
+		 * connector takes the adapter, the bridge then binds.)
+		 *
+		 * Keep i2c2 at its current clock-frequency = <100000>. The DDC
+		 * leg is 5V behind a FET shifter with only 2.2k pull-ups; do not
+		 * raise it to 400 kHz.
+		 *
+		 * Caveat: connector pin 18 (+5V) is VSEL_HDMI and R80/R81
+		 * reference it through D13, so on battery the 5V side is
+		 * unbiased and the EDID read fails. HDMI here already needs USB
+		 * power (U19/TPS2553 EN is low on battery by design). Expect "no
+		 * modes" on battery; keep a video= fallback if that must work.
+		 */
+		ddc-i2c-bus = <&i2c2>;
+
+		/*
+		 * hpd-gpios: absent. HPD never reaches the SoC - connector pin 19
+		 * goes through U20, an R85/R86 100k divider and Q12 (BC817-40) to
+		 * U16 pin 14 HPD_CBUS only. With no connector HPD op,
+		 * lt8912_bridge_detect() falls back to
+		 * lt8912_check_cable_status(), which reads 0x48 reg 0xC1 bit 7 -
+		 * the same register lt-land1281.sh prints at the end of its run.
+		 * Detection still works; it is polled, not interrupt-driven.
+		 *
+		 * hdmi-pwr-supply: absent. The connector's +5V is switched by U19
+		 * (TPS2553) in hardware; Linux sees only its /FAULT line
+		 * (porta 1, "hdmi-5v-fault-n"), never an EN it can drive.
+		 */
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&lt8912b_out>;
+			};
+		};
+	};
+
+	/* The LT8912B's rails (LT8912_VDD / VCCA / VCCA_HDMIPLL) are hard-wired to
+	 * the always-on +1V8 through ferrites, with no software control, see the
+	 * "seven *-supply properties" note in the header. Model that one rail as a
+	 * single always-on fixed regulator and hand it to all seven supplies the
+	 * driver requests, so devm_regulator_bulk_get() binds a real (if trivial)
+	 * regulator instead of logging "supply ... not found, using dummy regulator".
+	 * In desktop mode the bridge binds once, so this just trims 7 warning lines;
+	 * in badge mode the node is disabled outright (see status above), so the
+	 * ~2000-line spam that motivated this cannot occur there either way. The
+	 * supplies stay because they are the correct model of the hardware. */
+	lt8912_pwr: regulator-lt8912-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "lt8912-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+/*
+ * i2c2 (4020000.i2c) already carries the bridge today; the node is enabled with
+ * its iic2_cfg pinctrl in nix-badge.dtsi. It supplies
+ * #address-cells = <1> / #size-cells = <0> from cv180x.dtsi, so they are not
+ * repeated here.
+ *
+ * Verified on hardware: i2cget -y 2 0x48 0x00 -> 0x12.
+ */
+&i2c2 {
+	lt8912b: hdmi-bridge@48 {
+		compatible = "lontium,lt8912b";	/* lt8912_dt_match[] */
+		reg = <0x48>;			/* I2C_ADDR_MAIN; 0x49 is opened by the driver */
+
+		/* Disabled by default. The default profile is "badge mode", no
+		 * soph_drm, so no DSI host for this bridge to attach to. Left enabled it
+		 * defers forever and its probe churns udev/journal (the dummy-regulator
+		 * spam below was the visible symptom, but the deferred re-probes also
+		 * loaded the box). The desktop DTB re-enables it: see &lt8912b in
+		 * nix-badge-usb-host.dtsi (usbHost => desktop => HDMI). */
+		status = "disabled";
+
+		/* All seven optional supplies point at the single always-on 1V8 rail
+		 * (lt8912_pwr, below): the parts are permanently powered, and naming the
+		 * supplies is what stops regulator_bulk_get() logging a dummy-regulator
+		 * warning on every probe attempt (see lt8912_pwr for why that spammed). */
+		vdd-supply = <&lt8912_pwr>;
+		vccmipirx-supply = <&lt8912_pwr>;
+		vccsysclk-supply = <&lt8912_pwr>;
+		vcclvdstx-supply = <&lt8912_pwr>;
+		vcchdmitx-supply = <&lt8912_pwr>;
+		vcclvdspll-supply = <&lt8912_pwr>;
+		vcchdmipll-supply = <&lt8912_pwr>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* port@0 - MIPI DSI input, from our KMS driver's DSI host. */
+			port@0 {
+				reg = <0>;
+
+				lt8912b_in: endpoint {
+					/*
+					 * two entries == 2 lanes. D2/D3 are dead
+					 * on this board. Count is what matters;
+					 * values follow video-interfaces.yaml
+					 * (clock lane on hw lane 0).
+					 */
+					data-lanes = <1 2>;
+					remote-endpoint = <&soph_dsi_out>;
+				};
+			};
+
+			/* port@1 - HDMI output, to the hdmi-connector above. */
+			port@1 {
+				reg = <1>;
+
+				lt8912b_out: endpoint {
+					remote-endpoint = <&hdmi_connector_in>;
+				};
+			};
+		};
+	};
+};

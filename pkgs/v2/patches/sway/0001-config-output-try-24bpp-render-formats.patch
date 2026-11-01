@@ -1,0 +1,35 @@
+config/output: try 24bpp render formats
+
+search_render_format() tries only 32bpp and RGB565 render formats, so
+an output whose primary plane takes RGB888 or BGR888 but no 32bpp
+packed format ends up at RGB565, 6 bits per channel.
+
+Try RGB888 and BGR888 after the 8-bit 32bpp formats and before RGB565.
+Count them as 8 bits per channel in bit_depth_from_format(), so an
+output with render_bit_depth 6 skips them as it skips XRGB8888.
+
+Signed-off-by: badgeos
+---
+diff --git a/sway/config/output.c b/sway/config/output.c
+index 6d6afdc..8c5bfe4 100644
+--- a/sway/config/output.c
++++ b/sway/config/output.c
+@@ -453,7 +453,8 @@ static int compute_default_scale(struct wlr_output *output,
+ static enum render_bit_depth bit_depth_from_format(uint32_t render_format) {
+ 	if (render_format == DRM_FORMAT_XRGB2101010 || render_format == DRM_FORMAT_XBGR2101010) {
+ 		return RENDER_BIT_DEPTH_10;
+-	} else if (render_format == DRM_FORMAT_XRGB8888 || render_format == DRM_FORMAT_ARGB8888) {
++	} else if (render_format == DRM_FORMAT_XRGB8888 || render_format == DRM_FORMAT_ARGB8888 ||
++			render_format == DRM_FORMAT_RGB888 || render_format == DRM_FORMAT_BGR888) {
+ 		return RENDER_BIT_DEPTH_8;
+ 	} else if (render_format == DRM_FORMAT_RGB565) {
+ 		return RENDER_BIT_DEPTH_6;
+@@ -900,6 +901,8 @@ static bool search_render_format(struct search_context *ctx, size_t output_idx)
+ 		DRM_FORMAT_XBGR2101010,
+ 		DRM_FORMAT_XRGB8888,
+ 		DRM_FORMAT_ARGB8888,
++		DRM_FORMAT_RGB888,
++		DRM_FORMAT_BGR888,
+ 		DRM_FORMAT_RGB565,
+ 		DRM_FORMAT_INVALID,
+ 	};

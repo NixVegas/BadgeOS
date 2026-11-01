@@ -1,0 +1,3 @@
+&sdhci1 {
+	status = "disabled";
+};

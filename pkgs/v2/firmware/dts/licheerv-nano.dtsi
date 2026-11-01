@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Sipeed LicheeRV Nano (SG2002, 256 MiB): the console, the SD card, Ethernet on the
+ * internal EPHY, the AIC8800 on SDIO, the user LED and the user key. From the vendor
+ * board tree (sg2002_licheervnano_sd.dts, cvi_board_init.c) and the kernel's
+ * sg2002-licheerv-nano-b.dts, on the SG2002 pin table. Both cores' top files include
+ * it, after the SoC and <dt-bindings/gpio/gpio.h>.
+ */
+
+/ {
+	model = "LicheeRV Nano";
+	compatible = "sipeed,licheerv-nano", "sophgo,sg2002";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* The AIC8800 core VDD: the mmc core must see 3.3 V (see the badge's
+	 * sg2000-module-01.dtsi); sdhci-cv181x takes the pads to 1.8 V itself. */
+	wifi_vdd: regulator-wifi-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "aic8800-vdd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-0 = <&user_led_cfg>;
+		pinctrl-names = "default";
+
+		led-user {
+			gpios = <&porta 14 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "activity";
+		};
+	};
+};
+
+&pinctrl {
+	/* The user key is read by line name, not through gpio-keys. */
+	pinctrl-0 = <&user_btn_cfg>;
+	pinctrl-names = "default";
+
+	uart0_cfg: uart0-cfg {
+		uart0-pins {
+			pinmux = <PINMUX(PIN_UART0_TX, 0)>,
+				 <PINMUX(PIN_UART0_RX, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* The AIC8800's Bluetooth UART: TX/RX on the IIC0 pads, CTS/RTS on GPIOA 18/19. */
+	uart1_cfg: uart1-cfg {
+		uart1-pins {
+			pinmux = <PINMUX(PIN_IIC0_SCL, 1)>,
+				 <PINMUX(PIN_IIC0_SDA, 1)>,
+				 <PINMUX(PIN_JTAG_CPU_TCK, 4)>,
+				 <PINMUX(PIN_JTAG_CPU_TMS, 4)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+
+	sdhci0_cfg: sdhci0-cfg {
+		sdhci0-clk-pins {
+			pinmux = <PINMUX(PIN_SD0_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <3300>;
+		};
+
+		sdhci0-cmd-pins {
+			pinmux = <PINMUX(PIN_SD0_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-data-pins {
+			pinmux = <PINMUX(PIN_SD0_D0, 0)>,
+				 <PINMUX(PIN_SD0_D1, 0)>,
+				 <PINMUX(PIN_SD0_D2, 0)>,
+				 <PINMUX(PIN_SD0_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+
+		sdhci0-cd-pins {
+			pinmux = <PINMUX(PIN_SD0_CD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <3300>;
+		};
+	};
+
+	/* The SD1 pads for the AIC8800, and its WL_REG_ON (GPIOA 26, EMMC_DAT2 pad). */
+	sdhci1_cfg: sdhci1-cfg {
+		sdhci1-clk-pins {
+			pinmux = <PINMUX(PIN_SD1_CLK, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <16100>;
+			power-source = <1800>;
+		};
+
+		sdhci1-cmd-pins {
+			pinmux = <PINMUX(PIN_SD1_CMD, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+
+		sdhci1-data-pins {
+			pinmux = <PINMUX(PIN_SD1_D0, 0)>,
+				 <PINMUX(PIN_SD1_D1, 0)>,
+				 <PINMUX(PIN_SD1_D2, 0)>,
+				 <PINMUX(PIN_SD1_D3, 0)>;
+			bias-pull-up;
+			drive-strength-microamp = <10800>;
+			power-source = <1800>;
+		};
+
+		wifi-poweron-pins {
+			pinmux = <PINMUX(PIN_EMMC_DAT2, 3)>;
+			power-source = <3300>;
+		};
+	};
+
+	/* GPIOA 14 on the SD0_PWR_EN pad. */
+	user_led_cfg: user-led-cfg {
+		user-led-pins {
+			pinmux = <PINMUX(PIN_SD0_PWR_EN, 3)>;
+			power-source = <3300>;
+		};
+	};
+
+	/* GPIOA 30 on the AUX0 pad, active low. */
+	user_btn_cfg: user-btn-cfg {
+		user-btn-pins {
+			pinmux = <PINMUX(PIN_AUX0, 3)>;
+			bias-pull-up;
+			power-source = <3300>;
+		};
+	};
+};
+
+&porta {
+	gpio-line-names =
+		"", "", "", "", "", "", "", "",
+		"", "", "", "", "", "",
+		"user-led",          /* 14 */
+		"", "", "", "", "", "", "", "", "", "", "",
+		"wifi-poweron",      /* 26 */
+		"", "", "",
+		"user-btn",          /* 30, active low */
+		"";
+};
+
+&uart0 {
+	pinctrl-0 = <&uart0_cfg>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* Enabled with the Bluetooth bring-up. */
+&uart1 {
+	pinctrl-0 = <&uart1_cfg>;
+	pinctrl-names = "default";
+	status = "disabled";
+};
+
+&sdhci0 {
+	pinctrl-0 = <&sdhci0_cfg>;
+	pinctrl-names = "default";
+	bus-width = <4>;
+	no-1-8-v;
+	no-mmc;
+	no-sdio;
+	disable-wp;
+	status = "okay";
+};
+
+/* As on the badge: the internal EPHY, no external PHY. */
+&gmac0 {
+	phy-mode = "internal";
+	phy-handle = <&internal_ephy>;
+	status = "okay";
+};
+
+&mdio {
+	status = "okay";
+};
+
+&usb {
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+/* The AIC8800 on the vendor SDIO host, set up as the badge's (sg2000-module-01.dtsi
+ * explains each property), with this board's pads and WL_REG_ON. */
+&sdhci1 {
+	compatible = "cvitek,cv181x-sdio";
+	clocks = <&clk CLK_SD1>, <&clk CLK_AXI4_SD1>;
+	clock-names = "clk_wifisd", "axi";
+	bus-width = <4>;
+	non-removable;
+	no-mmc;
+	no-sd;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	src-frequency = <375000000>;
+	max-frequency = <187500000>;
+	vmmc-supply = <&wifi_vdd>;
+	pinctrl-0 = <&sdhci1_cfg>;
+	pinctrl-names = "default";
+	poweron-gpios = <&porta 26 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};

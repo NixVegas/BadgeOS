@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "dcwifi": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785219351,
+        "narHash": "sha256-etRH/5+b9r0CIO9i+pUNJ5ghA3gHGjbEubFUVwd+gKE=",
+        "owner": "NixVegas",
+        "repo": "dcwifi",
+        "rev": "1e2e099bdd0d788cbd94c07b9143610ac70fdced",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixVegas",
+        "repo": "dcwifi",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1785104993,
+        "narHash": "sha256-eKbrvPoAOFutbYMdbB3r5EQVmFxKv24iKqHPPUXA0gM=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "8623c4c20aa4ca2f5fb81510d2944066c3fb0d96",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "dcwifi": "dcwifi",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

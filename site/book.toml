@@ -1,0 +1,21 @@
+[book]
+title = "BadgeOS@VERSION@"
+description = "BadgeOS@VERSION@: NixOS for the NixVegas badge and other SG200x boards"
+authors = ["NixVegas"]
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "@SITE_URL@"
+git-repository-url = "@REPO_URL@"
+additional-css = ["assets/badgeos.css"]
+additional-js = ["assets/options-search.js"]
+preferred-dark-theme = "navy"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 40
