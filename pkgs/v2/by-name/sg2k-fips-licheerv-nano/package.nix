@@ -21,6 +21,17 @@ let
         cp -f ${./fsbl-memmap.h} build/cvi_board_memmap.h
         grep -q 'CVIMMAP_DRAM_SIZE *0x10000000UL' build/cvi_board_memmap.h
       '';
+      # The Nano has no 32 kHz crystal. Switched to one, the RTC block stops, and every reset
+      # request it handles (reboot, the watchdog, the reset button) hangs until a power cycle.
+      buildPhase =
+        assert lib.hasInfix "SWITCH_32K_XTAL=y" old.buildPhase;
+        lib.replaceStrings [ "SWITCH_32K_XTAL=y" ] [ "SWITCH_32K_XTAL=n" ] old.buildPhase;
+      installPhase = old.installPhase + ''
+        if grep -aq 'Switch RTC mode to xtal32k' $out/bl2.bin; then
+          echo "bl2.bin switches the RTC to a 32 kHz crystal the Nano doesn't have" >&2
+          exit 1
+        fi
+      '';
     });
 
   ubootFor =
