@@ -94,6 +94,9 @@ in
       unitConfig = conditions;
       after = [ "nix-daemon.socket" ];
       serviceConfig = {
+        # Harmonia reads db.sqlite itself, and after stage 0 resets /nix/var it doesn't exist
+        # until the daemon opens the store, so ask the daemon something first.
+        ExecStartPre = "+${config.nix.package}/bin/nix-store --query --hash /run/current-system";
         CacheDirectory = "harmonia";
         MemoryHigh = "128M";
         MemoryMax = "192M";
