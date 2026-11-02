@@ -66,7 +66,7 @@ The Nano runs one of its two cores, and a small (0201) strap resistor on the boa
 which one at power-on. It ships set for the RISC-V core, and to boot the ARM core you
 move the resistor to its other position with a soldering iron. There's no switch or
 latch like the badge's, so the core can't be changed from Linux or with a button, and
-`coreSelect.enable` stays off. The ARM system hasn't been booted on a Nano yet.
+`coreSelect.enable` stays off.
 
 There are three SD card images for the Nano:
 
