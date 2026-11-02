@@ -94,10 +94,10 @@ don't know about it.
 
 ## A button or another feature doesn't work
 
-Some v2.0 badges have cold solder joints on the SoM, where the castellated pads of the Duo
-Module 01 meet the badge. If a button or some other feature doesn't work, a bad joint may
-be why. Look along the module's edges under magnification, and rework any joint that looks
-dull or hasn't flowed onto its pad with a fine-tipped iron and a little flux.
+Some v2.0 badges have cold solder joints on the SoM, where the Duo Module 01's castellated
+pads meet the badge. If a button or anything else doesn't work, that's a good first
+suspect. Look along the module's edges with a loupe or a microscope, and touch up any joint
+that looks dull or never flowed onto its pad with a fine-tipped iron and a little flux.
 
 ## HDMI
 

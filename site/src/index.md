@@ -5,6 +5,8 @@
 </video>
 
 <!-- @VERSION_NOTE@ -->
+Want to skip the build? [Grab an SD card image](site/src/getting-started.md#download-the-sd-card-image)
+for your badge or LicheeRV Nano.
 
 BadgeOS is [NixOS](https://nixos.org) for the Nix Vegas DEF CON badge, and for the
 [Sipeed LicheeRV Nano](https://wiki.sipeed.com/hardware/en/lichee/RV_Nano/1_intro.html).
@@ -46,6 +48,10 @@ If something isn't working, try [Troubleshooting](site/src/troubleshooting.md), 
 
 The [options reference](site/src/options/index.md) lists every option we declare, and there's a
 [search page](site/src/options/search.md) for it too.
+
+> [!NOTE]
+> Working on BadgeOS with an LLM? Go for it. See [Using LLMs on
+> BadgeOS](site/src/contributing.md#using-llms-on-badgeos) before you send a pull request.
 
 ## The hardware
 

@@ -1,12 +1,33 @@
 # Getting started
 
+## Download the SD card image
+
+We build SD card images for every release on [our Hydra](https://hydra.nixos.lv/project/badgeos),
+so you don't have to compile anything. The current release lives on the `@RELEASE@` branch:
+
+| Board | Image |
+|---|---|
+| The badge | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.nixbadge.sdcard/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.nixbadge.sdcard)) |
+| LicheeRV Nano, both cores | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard)) |
+| LicheeRV Nano, RISC-V only | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-riscv/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-riscv)) |
+| LicheeRV Nano, ARM only | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-arm/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-arm)) |
+
+Each link grabs the newest image that finished building. The [`@RELEASE@`
+jobset](https://hydra.nixos.lv/jobset/badgeos/@RELEASE@) has everything else we build for the
+release, and the [`master` jobset](https://hydra.nixos.lv/jobset/badgeos/master) has the
+bleeding edge. Flash it the same way as one you built yourself, below.
+
 ## Build and flash the SD card image
 
-The SD card image is the flake's default package, and it cross-compiles from either an
-`x86_64-linux` or an `aarch64-linux` machine. The first build takes a while.
+If you'd rather build it yourself, the image is the flake's default package, and it
+cross-compiles from an `x86_64-linux` or `aarch64-linux` machine. Point Nix at our cache
+and most of it downloads instead. You'll need to be a trusted user for the `--option`s,
+and the key is the same one as in [The badge's cache](cache.md):
 
 ```console
-$ nix build github:NixVegas/BadgeOS#sg2k-sdcard
+$ nix build github:NixVegas/BadgeOS/@RELEASE@#sg2k-sdcard \
+    --option extra-substituters https://cache.nixos.lv \
+    --option extra-trusted-public-keys citadel.build.dc.nixos.lv-1:UZbkvFcWZr/VP7cvNPLRpcMTCvaYw7X5XQDzA+nPVxY=
 $ ls -l result/sdcard.img
 ```
 

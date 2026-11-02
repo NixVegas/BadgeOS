@@ -40,6 +40,18 @@ where the badge is `nixbadge`), sophgone's fips (`bootloader.sophgone`), and bad
 signed cards and bundles (`badge1`). This site is `nix build .#docs`, and its options reference
 is generated from the module, so new options should have a description.
 
+## Branches and releases
+
+Development happens on `master`. When we cut a release, it gets its own
+`v<major>.<minor>` branch off `master`, and Hydra builds both: `hydra/jobsets.nix` makes a
+jobset for each, and the [download links](site/src/getting-started.md#download-the-sd-card-image)
+point at the release's.
+
+The version lives in one place, the flakever template in `flake/version.nix`. BadgeOS's
+version, the release branch's name, and the branch in the download links all come from
+it. To start a new release, bump the template on `master` and cut the branch. Then add the
+old release branch to `branches` in `hydra/jobsets.nix`, or its jobset quietly goes away.
+
 ## Style
 
 - Write Nix in nixpkgs style, and run `nix fmt`.
@@ -54,6 +66,12 @@ is generated from the module, so new options should have a description.
 - Don't commit keys or other secrets. The two test keys in the repository are there on
   purpose (see [How BadgeOS boots](site/src/under-the-hood.md#signed-firmware-and-verified-boot)).
 - Commit messages start with the area they touch, like `sg2k:`, `site:` or `flake:`.
+
+## Using LLMs on BadgeOS
+
+LLMs are often invaluable assistants for hardware bringup. Feel free to contribute using
+them, and submit pull requests with code that you understand. We follow Oxide Computer's
+[RFD 576](https://rfd.shared.oxide.computer/rfd/0576), "Using LLMs at Oxide".
 
 ## Testing on a badge
 
