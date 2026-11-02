@@ -65,10 +65,10 @@ let
     ) "the boot image has profiles ${toString config.system.build.bootImage.profiles}"
     ++ lib.optional (has "rauc_ext" config.system.build.bootImage.scripts.script_default) "the boot script carries rauc_ext"
     ++ lib.optional (
-      !lib.elem (sys.pkgs.aic8800-firmware.override { variants = [ "aic8800" ]; }).drvPath (
+      !lib.elem (sys.pkgs.aic8800-firmware.override { variants = [ "aic8800D80" ]; }).drvPath (
         map (p: p.drvPath or "") config.hardware.firmware.paths
       )
-    ) "the WiFi firmware is not the aic8800 set"
+    ) "the WiFi firmware is not the aic8800D80 set"
     ++ lib.optional (
       config.system.build.activeFip.drvPath != fips.fipPolyglot.drvPath
     ) "the active fip is not the Nano's polyglot"

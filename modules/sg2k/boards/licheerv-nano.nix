@@ -1,4 +1,4 @@
-# The Sipeed LicheeRV Nano (SG2002, 256 MiB): SD card, Ethernet, the AIC8800 WiFi.
+# The Sipeed LicheeRV Nano (SG2002, 256 MiB): SD card, Ethernet, the AIC8800D80 WiFi.
 {
   config,
   lib,
@@ -30,7 +30,6 @@ in
       ethernet.enable = mkDefault true;
       wifi.enable = mkDefault true;
       wifi.bluetooth = mkDefault "none";
-      wifi.firmware = mkDefault "aic8800";
       usb.gadget.product = mkDefault "LicheeRV Nano (NCM)";
     };
   };
