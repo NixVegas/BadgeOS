@@ -1,0 +1,17 @@
+riscv: dts: sophgo: cv180x: correct the watchdog timeout table
+
+--- a/arch/riscv/boot/dts/sophgo/cv180x.dtsi
++++ b/arch/riscv/boot/dts/sophgo/cv180x.dtsi
+@@ -97,7 +97,11 @@
+ 		wdt: watchdog@3010000 {
+ 			compatible = "snps,dw-wdt";
+ 			reg = <0x03010000 0x100>;
+-			snps,watchdog-tops = <0x0fffffff 0x1fffffff 0x3fffffff 0x7fffffff 0x0fffffff 0x1fffffff 0x3fffffff 0x7fffffff 0x0fffffff 0x1fffffff 0x3fffffff 0x7fffffff 0x0fffffff 0x1fffffff 0x3fffffff 0x7fffffff>;
++			/* Use the hardware's standard DesignWare periods: 2^(16+n) cycles. */
++			snps,watchdog-tops = <0x00010000 0x00020000 0x00040000 0x00080000
++					      0x00100000 0x00200000 0x00400000 0x00800000
++					      0x01000000 0x02000000 0x04000000 0x08000000
++					      0x10000000 0x20000000 0x40000000 0x80000000>;
+ 			interrupts = <SOC_PERIPHERAL_IRQ(42) IRQ_TYPE_LEVEL_HIGH>;
+ 			clocks = <&osc>;
+ 			resets = <&rst RST_WDT1>;

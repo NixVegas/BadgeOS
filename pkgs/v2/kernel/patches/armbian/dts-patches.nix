@@ -39,4 +39,6 @@
   ./0053-arm64-dts-sophgo-add-Milk-V-Duo-S-pin-header-overlay.patch
   ./0056-riscv-dts-sophgo-reserve-a-ramoops-region-on-the-Mil.patch
   ./0057-arm64-dts-sophgo-reserve-a-ramoops-region-on-the-Mil.patch
+  # Ours, after 0038: corrects the watchdog table 0016 adds.
+  ../cv180x-watchdog-tops.patch
 ]
