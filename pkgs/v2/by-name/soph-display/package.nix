@@ -31,6 +31,7 @@ stdenv.mkDerivation {
     ./patches/mipi-tx-board-display-fixes.patch
     ./patches/scaler-disp-set-layer.patch
     ./patches/vcodec-reset-on-probe.patch
+    ./patches/scaler-dsi-set-eot.patch
   ];
 
   postPatch = ''
