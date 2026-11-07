@@ -40,9 +40,6 @@ in
 
       display.drmDevice = mkDefault "/dev/dri/badge-hdmi";
       hdmi.audio = mkDefault true;
-      # The SG2000 -> LT8912B path shears ~1.3 px/row at the exact mode width; +1 on the
-      # bridge active-width register aligns it (bench-measured).
-      hdmi.hactiveOffset = mkDefault 1;
       usb.gadget.product = mkDefault "Milk-V Duo S badge (NCM)";
     };
 
