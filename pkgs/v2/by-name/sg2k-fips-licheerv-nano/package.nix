@@ -8,6 +8,9 @@
   runCommand,
   python3,
   sophgone,
+  # Release PWR_SEQ1/2 (PWR_GPIO3/4) from the RTC power sequencer, for a touchscreen's
+  # IRQ and reset.
+  touchPads ? false,
 }:
 let
   fsblFor =
@@ -40,7 +43,10 @@ let
       (old: {
         pname = "uboot-licheerv-nano-${core}";
         postPatch = old.postPatch + ''
-          cp -f ${./cvi_board_init.c} board/cvitek/cvi_board_init.c
+          cp -f ${./cvi_board_init.c} board/cvitek/cvi_board_init.c${lib.optionalString touchPads ''
+
+            cp -f ${./cvi_board_init.c} board/cvitek/licheerv-nano-board-init.c
+            cp -f ${./cvi_board_init-touch-pads.c} board/cvitek/cvi_board_init.c''}
           cp -f ${./uboot-memmap.h} include/cvi_board_memmap.h
           cp -f ${controlDts.${core}} arch/${core}/dts/cv181x_cv181xasic.dts
           patch -p1 --fuzz=0 < ${./btnsel.patch}

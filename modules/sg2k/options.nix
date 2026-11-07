@@ -137,6 +137,7 @@ in
     ledRing.enable = mkEnableOption "the WS2812 LED ring on SPI3";
     oled.enable = mkEnableOption "the I2C OLED";
     sharpPanel.enable = mkEnableOption "the Sharp memory panel as the system console";
+    dsiPanel.enable = mkEnableOption "the ST7701 DSI panel and CST340 touchscreen of the MaixCAM, a LicheeRV Nano on a carrier";
     coreSelect.enable = mkEnableOption "switching the boot core from Linux";
   };
 
