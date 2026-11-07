@@ -14,9 +14,9 @@ let
   # A minimal sway config for a board with no keyboard, no GPU and one core.
   swayConfig = pkgs.writeText "badge-sway.config" ''
     # soph_drm's HDMI output, in outputMode.
-    output HDMI-A-1 position 0 0
-    output HDMI-A-1 mode ${cfg.outputMode}
-    output HDMI-A-1 bg #101015 solid_color
+    output ${cfg.outputName} position 0 0
+    ${lib.optionalString (cfg.outputMode != "native") "output ${cfg.outputName} mode ${cfg.outputMode}"}
+    output ${cfg.outputName} bg #101015 solid_color
 
     # No title bars or gaps: the CPU draws every pixel.
     default_border none
@@ -32,18 +32,28 @@ let
     bindsym $mod+Return exec ${pkgs.foot}/bin/foot
     bindsym $mod+Shift+q kill
     bindsym $mod+Shift+e exec swaymsg exit
-    # Back to the desktop mode, for an app that died with the output switched.
-    bindsym $mod+Shift+m exec swaymsg output HDMI-A-1 mode ${cfg.outputMode}
+    ${
+      lib.optionalString (cfg.outputMode != "native") ''
+        # Back to the desktop mode, for an app that died with the output switched.
+        bindsym $mod+Shift+m exec swaymsg output ${cfg.outputName} mode ${cfg.outputMode}''
+    }${lib.optionalString (cfg.extraConfig != "") "\n\n${cfg.extraConfig}"}
   '';
 in
 {
   options.badge.graphics = {
     enable = lib.mkEnableOption "Sway on DRM/KMS, software-rendered";
 
+    outputName = lib.mkOption {
+      type = lib.types.str;
+      default = "HDMI-A-1";
+      description = "soph_drm's output, as sway names it.";
+    };
+
     outputMode = lib.mkOption {
       type = lib.types.enum [
         "1280x720"
         "640x360"
+        "native"
       ];
       default = "1280x720";
       description = ''
@@ -51,7 +61,14 @@ in
         "1280x720": the DISP video layer scans the compositor's RGB888 buffer 1:1.
         "640x360": the DISP GOP doubles an XRGB8888 buffer, for a quarter of the
         pixels to render and a third of the scanout bandwidth.
+        "native": no mode line; the output's preferred mode, for a panel.
       '';
+    };
+
+    extraConfig = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = "Lines appended to the sway config.";
     };
 
     autostart = lib.mkOption {
