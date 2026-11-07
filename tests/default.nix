@@ -76,6 +76,10 @@ else
       };
     };
     graphics-24bpp = import ./graphics-24bpp.nix { pkgs = pkgs; };
+    desktop-dsi-panel = import ./desktop-dsi-panel.nix {
+      inherit pkgs;
+      sys = self.nixosConfigurations."licheerv-nano-riscv-${shortArch system}";
+    };
     dtb-codec-resets = import ./dtb-codec-resets.nix {
       inherit pkgs;
       systems = {

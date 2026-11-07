@@ -62,6 +62,7 @@ pkgs.runCommand "dtb-licheerv-nano" { nativeBuildInputs = [ pkgs.dtc ]; } ''
     is $p /backlight compatible pwm-backlight
     is $p /soc/pwm@3062000 status okay
     is $p /soc/cvi_vpss interrupt-names sc
+    is $p /soc/dsi compatible badge,sg2002-soph-dsi-st7701
     is $p /soc/i2c@4040000 status okay
     is $p /soc/i2c@4040000/touchscreen@5a compatible hynitron,cst340
     is $p /soc/i2c@4040000/touchscreen@5a interrupts "3 2" x

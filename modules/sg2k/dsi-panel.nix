@@ -20,6 +20,17 @@ in
     ];
 
     hardware.sg2k.display.enable = lib.mkDefault true;
+    hardware.sg2k.display.drmDevice = lib.mkDefault "/dev/dri/badge-panel";
+
+    # Sway on the panel, turned to the carrier's landscape, with touch on it.
+    badge.graphics = lib.mkIf config.badge.graphics.enable {
+      outputName = lib.mkDefault "DSI-1";
+      outputMode = lib.mkDefault "native";
+      extraConfig = ''
+        output ${config.badge.graphics.outputName} transform 90
+        input type:touch map_to_output ${config.badge.graphics.outputName}
+      '';
+    };
 
     boot.extraModprobeConfig = ''
       options cv181x_mipi_tx disp_working_bank=1
@@ -30,12 +41,15 @@ in
     systemd.services.st7701-panel-init = {
       description = "Bring up the DSI panel";
       wantedBy = [ "multi-user.target" ];
+      # A restart would re-initialise the link under soph_drm.
+      restartIfChanged = false;
       requires = [ "soph-display-load.service" ];
       after = [ "soph-display-load.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = lib.getExe pkgs.st7701-panel-init;
+        ExecStartPost = lib.optional config.badge.graphics.enable "${pkgs.kmod}/bin/modprobe soph_drm";
       };
     };
   };

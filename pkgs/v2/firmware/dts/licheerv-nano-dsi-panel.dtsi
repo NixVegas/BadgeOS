@@ -9,6 +9,13 @@
 #include "sg200x-vip.dtsi"
 
 / {
+	/* soph_drm, on the link st7701-panel-init brings up. */
+	soc {
+		dsi {
+			compatible = "badge,sg2002-soph-dsi-st7701";
+		};
+	};
+
 	/* PWM10 is pwm2's third channel; the vendor runs this panel at 100 kHz and 20 %. */
 	backlight {
 		compatible = "pwm-backlight";
