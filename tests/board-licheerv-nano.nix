@@ -14,6 +14,10 @@ let
   otherSystem = if core == "arm" then "riscv64-linux" else "aarch64-linux";
   rauc = config.services.rauc;
   has = lib.hasInfix;
+  panel =
+    (sys.extendModules {
+      modules = [ { hardware.sg2k.dsiPanel.enable = true; } ];
+    }).config;
 
   failures =
     lib.optional (
@@ -75,7 +79,17 @@ let
     ++ lib.optional (
       config.hardware.sg2k.firmware.recoveryFip.drvPath
       != fips.${if core == "arm" then "fipArm" else "fipRiscv"}.drvPath
-    ) "the recovery fip is not the Nano's ${core} fip";
+    ) "the recovery fip is not the Nano's ${core} fip"
+    ++ map (a: "dsiPanel: assertion: ${a.message}") (lib.filter (a: !a.assertion) panel.assertions)
+    ++ lib.optional (
+      !panel.systemd.services ? st7701-panel-init
+    ) "dsiPanel: no st7701-panel-init service"
+    ++ lib.optional (
+      !has "hynitron_cstxxx firmware_probe=1" panel.boot.extraModprobeConfig
+    ) "dsiPanel: the touchscreen has no firmware_probe"
+    ++ lib.optional (
+      panel.system.build.activeFip.drvPath == config.system.build.activeFip.drvPath
+    ) "dsiPanel: the fip does not release the touch pads";
 in
 if failures == [ ] then
   pkgs.runCommand "board-licheerv-nano-${core}" {

@@ -59,6 +59,7 @@
  */
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
@@ -286,10 +287,24 @@ static bool nomodeset;
 module_param(nomodeset, bool, 0444);
 MODULE_PARM_DESC(nomodeset, "register the DRM device but never touch the GOP");
 
+/* What is on the DSI link, by device-tree compatible. */
+struct soph_profile {
+	const struct combo_dev_cfg_s *link;	/* NULL: keep the link as it is */
+	int connector_type;
+	bool bridge;
+	bool gop_mode;
+	bool sync_low;		/* force VS/HS active-low in the DISP */
+	bool limited_rgb;	/* rgb_limited applies */
+	u32 refresh;		/* Hz; the pixel clock cannot be read back */
+	u32 mode_flags;
+	u16 width, height;	/* 0: whatever the DISP is running */
+};
+
 struct soph_drm {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	struct drm_connector connector;
+	const struct soph_profile *profile;
 
 	/* The panel's own mode, which the video layer scans 1:1, and the
 	 * half-size mode the GOP's 2x scaler doubles; see soph_read_mode(). */
@@ -850,7 +865,7 @@ static void soph_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	/* After the paths above, which leave the output CSC at identity or off. */
-	if (rgb_limited)
+	if (rgb_limited && sd->profile->limited_rgb)
 		sclr_disp_set_out_csc_matrix(&soph_rgb_limited_csc);
 
 	/*
@@ -1089,7 +1104,8 @@ soph_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 
 	if (soph_mode_is_native(sd, mode))
 		return MODE_OK;
-	if (mode->hdisplay == sd->gop_mode.hdisplay &&
+	if (sd->profile->gop_mode &&
+	    mode->hdisplay == sd->gop_mode.hdisplay &&
 	    mode->vdisplay == sd->gop_mode.vdisplay)
 		return MODE_OK;
 	return MODE_BAD;
@@ -1210,7 +1226,7 @@ static int soph_conn_get_modes(struct drm_connector *connector)
 	struct drm_display_mode *mode;
 	int i, n = 0;
 
-	for (i = 0; i < ARRAY_SIZE(modes); i++) {
+	for (i = 0; i < (sd->profile->gop_mode ? 2 : 1); i++) {
 		mode = drm_mode_duplicate(connector->dev, modes[i]);
 		if (!mode)
 			continue;
@@ -1273,6 +1289,26 @@ static const struct combo_dev_cfg_s soph_dsi_720p60 = {
 	/* pixel_clk * bits_per_pixel / lanes, in Mbit/s */
 	.phy_data_rate = 74250 * 24 / (2 * 1000),
 	.pixel_clk = 74250,
+};
+
+static const struct soph_profile soph_hdmi_profile = {
+	.link = &soph_dsi_720p60,
+	.connector_type = DRM_MODE_CONNECTOR_HDMIA,
+	.bridge = true,
+	.gop_mode = true,
+	.sync_low = true,
+	.limited_rgb = true,
+	.refresh = 60,
+};
+
+/* The MaixCAM carrier's ST7701, as st7701-panel-init left it: 368x552, 696x602 total
+ * at 31.424 MHz, V+/H-, full-range RGB. */
+static const struct soph_profile soph_panel_profile = {
+	.connector_type = DRM_MODE_CONNECTOR_DSI,
+	.refresh = 75,
+	.mode_flags = DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NHSYNC,
+	.width = 368,
+	.height = 552,
 };
 
 /*
@@ -1443,10 +1479,12 @@ static int soph_read_mode(struct soph_drm *sd)
 	 * 1280x720p60. Removing this because "positive is correct for a
 	 * DT-configured bridge" produced three black-screen deploys. Do not.
 	 */
-	t.vsync_pol = false;
-	t.hsync_pol = false;
-	sclr_disp_set_timing(&t);
-	sclr_disp_get_hw_timing(&t);
+	if (sd->profile->sync_low) {
+		t.vsync_pol = false;
+		t.hsync_pol = false;
+		sclr_disp_set_timing(&t);
+		sclr_disp_get_hw_timing(&t);
+	}
 
 	if (!t.htotal || !t.vtotal || t.hfde_end <= t.hfde_start ||
 	    t.vfde_end <= t.vfde_start) {
@@ -1458,14 +1496,23 @@ static int soph_read_mode(struct soph_drm *sd)
 
 	w = t.hfde_end - t.hfde_start + 1;
 	h = t.vfde_end - t.vfde_start + 1;
+	if (sd->profile->width &&
+	    (w != sd->profile->width || h != sd->profile->height)) {
+		drm_err(&sd->drm,
+			"DISP is running %ux%u, not the panel's %ux%u -- initialise the panel first\n",
+			w, h, sd->profile->width, sd->profile->height);
+		return -ENODEV;
+	}
 
-	/* We cannot read the pixel clock back, so assume the 60 Hz this panel
-	 * path is set up for and derive the clock from the blanking totals,
-	 * which is the number userspace actually uses for pacing. */
-	refresh = 60;
+	/* The pixel clock cannot be read back; the clock follows from the
+	 * profile's refresh and the blanking totals. */
+	refresh = sd->profile->refresh;
 
 	soph_fill_mode(&sd->native_mode, &t, w, h, refresh);
 	sd->native_mode.type |= DRM_MODE_TYPE_PREFERRED;
+	sd->native_mode.flags = sd->profile->mode_flags;
+	if (!sd->profile->gop_mode)
+		goto done;
 
 	/*
 	 * The GOP mode is the panel halved, and the overlay's 2x scaler puts
@@ -1488,7 +1535,9 @@ static int soph_read_mode(struct soph_drm *sd)
 	 * 640-active-in-1650 timing is correct here even though it looks odd.
 	 */
 	soph_fill_mode(&sd->gop_mode, &t, w / 2, h / 2, refresh);
+	sd->gop_mode.flags = sd->profile->mode_flags;
 
+done:
 	sd->vbl_period = ns_to_ktime(NSEC_PER_SEC / refresh);
 	/* Poll several times per frame to catch the real frame-end for a
 	 * tear-free flip; see soph_vbl_fn. */
@@ -1498,7 +1547,7 @@ static int soph_read_mode(struct soph_drm *sd)
 		 "hardware mode %s (htotal %u vtotal %u, %u kHz), GOP mode %s\n",
 		 sd->native_mode.name, sd->native_mode.htotal,
 		 sd->native_mode.vtotal, sd->native_mode.clock,
-		 sd->gop_mode.name);
+		 sd->profile->gop_mode ? sd->gop_mode.name : "none");
 	return 0;
 }
 
@@ -1548,6 +1597,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 		return PTR_ERR(sd);
 	drm = &sd->drm;
 	platform_set_drvdata(pdev, sd);
+	sd->profile = device_get_match_data(&pdev->dev) ?: &soph_hdmi_profile;
 
 	/* GEM DMA buffers come out of CMA, same pool the VIP video buffers and
 	 * gmac0's descriptor rings share. A 1280x720 RGB888 buffer is 2.7 MB
@@ -1578,8 +1628,8 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 * (along with the D-PHY lanes, the PLL and the DSI MAC), so this has to
 	 * happen first or we find the 320x240 reset timing and refuse to probe.
 	 */
-	if (!soph_dsi_host_registered) {
-		ret = soph_mipi_tx_setup(&soph_dsi_720p60);
+	if (!soph_dsi_host_registered && sd->profile->link) {
+		ret = soph_mipi_tx_setup(sd->profile->link);
 		if (ret) {
 			drm_err(drm, "DSI bring-up failed (%d)\n", ret);
 			return ret;
@@ -1591,7 +1641,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 * other end. lontium-lt8912b registers itself against this host from
 	 * its own i2c probe, so it may well have deferred until now.
 	 */
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node && sd->profile->bridge) {
 		if (!soph_dsi_host_registered) {
 			soph_dsi_host.dev = &pdev->dev;
 			soph_dsi_host.ops = &soph_dsi_host_ops;
@@ -1623,10 +1673,12 @@ static int soph_drm_probe(struct platform_device *pdev)
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;
-	/* Framebuffers range from the GOP mode up to the panel. */
-	drm->mode_config.min_width = sd->gop_mode.hdisplay;
+	/* Framebuffers range from the GOP mode, if there is one, up to the panel. */
+	drm->mode_config.min_width = sd->profile->gop_mode ?
+		sd->gop_mode.hdisplay : sd->native_mode.hdisplay;
 	drm->mode_config.max_width = sd->native_mode.hdisplay;
-	drm->mode_config.min_height = sd->gop_mode.vdisplay;
+	drm->mode_config.min_height = sd->profile->gop_mode ?
+		sd->gop_mode.vdisplay : sd->native_mode.vdisplay;
 	drm->mode_config.max_height = sd->native_mode.vdisplay;
 	drm->mode_config.preferred_depth = 32;
 	drm->mode_config.funcs = &soph_mode_config_funcs;
@@ -1648,7 +1700,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 */
 	drm_connector_helper_add(&sd->connector, &soph_conn_helper_funcs);
 	ret = drm_connector_init(drm, &sd->connector, &soph_conn_funcs,
-				 DRM_MODE_CONNECTOR_HDMIA);
+				 sd->profile->connector_type);
 	if (ret)
 		return ret;
 	/* No hotplug visibility on a link we do not drive: claim
@@ -1658,7 +1710,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 	/* The LT8912B reads display_info.is_hdmi to choose HDMI vs DVI
 	 * signalling; with our own (EDID-less) connector it would stay
 	 * zeroed and program DVI. Force HDMI. */
-	sd->connector.display_info.is_hdmi = true;
+	sd->connector.display_info.is_hdmi = sd->profile->bridge;
 
 	ret = drm_simple_display_pipe_init(drm, &sd->pipe, &soph_pipe_funcs,
 					   soph_formats,
@@ -1718,7 +1770,8 @@ static void soph_drm_remove(struct platform_device *pdev)
  * registers, only identity and the graph edge.
  */
 static const struct of_device_id soph_drm_of_match[] = {
-	{ .compatible = "badge,sg2000-soph-dsi" },
+	{ .compatible = "badge,sg2000-soph-dsi", .data = &soph_hdmi_profile },
+	{ .compatible = "badge,sg2002-soph-dsi-st7701", .data = &soph_panel_profile },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, soph_drm_of_match);

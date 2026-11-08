@@ -165,6 +165,19 @@ in
     patch = ./lt8912b-hdmi-audio.patch;
   }
   {
+    name = "hynitron-cstxxx-firmware-probe";
+    patch = ./hynitron-cstxxx-firmware-probe.patch;
+  }
+  {
+    # The LicheeRV Nano's DSI panel touchscreen (hardware.sg2k.dsiPanel).
+    name = "enable-hynitron-touchscreen";
+    patch = null;
+    structuredExtraConfig = with lib.kernel; {
+      INPUT_TOUCHSCREEN = yes;
+      TOUCHSCREEN_HYNITRON_CSTXXX = module;
+    };
+  }
+  {
     name = "sophgo-soc-features-config";
     patch = null;
     structuredExtraConfig = with lib.kernel; {
