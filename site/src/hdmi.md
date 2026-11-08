@@ -80,11 +80,13 @@ nothing. Two lanes have room for 720p60 RGB888, so both paths use two.
 
 ### The picture leans
 
-If every row is shifted about one pixel from the row above, the bridge's active width
-is off by one. The badge programs 1281 instead of 1280 through the patched driver's
+If every row is shifted about one pixel from the row above, the bridge is counting
+bytes into the line that aren't pixels. On the badge that was the DSI EoT packet: the
+LT8912B asks the host not to send one, and soph_drm turns it off at attach. If another
+source still shears, widen the bridge's active width with the patched driver's
 `hactive_offset` parameter, set by
-[`hardware.sg2k.hdmi.hactiveOffset`](options/hardware.sg2k.hdmi.md#opt-hardware.sg2k.hdmi.hactiveOffset).
-You can change it live in `/sys/module/lontium_lt8912b/parameters/hactive_offset`.
+[`hardware.sg2k.hdmi.hactiveOffset`](options/hardware.sg2k.hdmi.md#opt-hardware.sg2k.hdmi.hactiveOffset),
+or live in `/sys/module/lontium_lt8912b/parameters/hactive_offset`.
 
 ### Flashing
 

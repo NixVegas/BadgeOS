@@ -1313,10 +1313,9 @@ static int soph_dsi_host_attach(struct mipi_dsi_host *host,
 				struct mipi_dsi_device *dev)
 {
 	/*
-	 * Just acknowledge the peripheral. The DSI link is already up, probe
-	 * ran soph_mipi_tx_setup() with this board's profile, and there is
-	 * nothing here to change: the profile is already 2-lane, which is what
-	 * the bridge asks for.
+	 * The DSI link is already up: probe ran soph_mipi_tx_setup() with this
+	 * board's 2-lane profile, which is what the bridge asks for. Only the
+	 * EoT packet follows the peripheral's flags.
 	 *
 	 * Do not re-run soph_mipi_tx_setup() here. It re-programs the DSI MAC
 	 * and the DISP timing, and bridge-attach happens after the pipe is
@@ -1327,6 +1326,7 @@ static int soph_dsi_host_attach(struct mipi_dsi_host *host,
 	 */
 	dev_info(host->dev, "DSI attach: %u lanes, format %u, flags 0x%lx\n",
 		 dev->lanes, dev->format, dev->mode_flags);
+	sclr_dsi_set_eot(!(dev->mode_flags & MIPI_DSI_MODE_NO_EOT_PACKET));
 	return 0;
 }
 
