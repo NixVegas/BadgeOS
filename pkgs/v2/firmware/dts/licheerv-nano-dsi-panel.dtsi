@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The MaixCAM's panel and touchscreen on the LicheeRV Nano: an ST7701 368x552 DSI panel
+ * (reset on PWR_GPIO0, backlight on PWM10) and a Hynitron CST340 touchscreen on I2C4 (IRQ
+ * and reset on PWR_GPIO3/4, which the fip's touchPads releases). From the vendor's
+ * sg2002_licheervnano_sd.dts.
+ */
+
+#include "sg200x-vip.dtsi"
+
+/ {
+	/* PWM10 is pwm2's third channel; the vendor runs this panel at 100 kHz and 20 %. */
+	backlight {
+		compatible = "pwm-backlight";
+		pinctrl-0 = <&lcd_backlight_cfg>;
+		pinctrl-names = "default";
+		pwms = <&pwm2 2 10000 0>;
+		brightness-levels = <0 10 20 30 40 50 60 70 80 90 100>;
+		default-brightness-level = <2>;
+	};
+};
+
+&pinctrl {
+	pinctrl-0 = <&user_btn_cfg>, <&lcd_reset_cfg>;
+
+	lcd_reset_cfg: lcd-reset-cfg {
+		lcd-reset-pins {
+			pinmux = <PINMUX(PIN_PWR_GPIO0, 0)>;
+			power-source = <1800>;
+		};
+	};
+
+	lcd_backlight_cfg: lcd-backlight-cfg {
+		lcd-backlight-pins {
+			pinmux = <PINMUX(PIN_PWR_GPIO2, 4)>;
+			power-source = <1800>;
+		};
+	};
+
+	tp_cfg: tp-cfg {
+		tp-pins {
+			pinmux = <PINMUX(PIN_PWR_SEQ1, 3)>,
+				 <PINMUX(PIN_PWR_SEQ2, 3)>;
+			power-source = <1800>;
+		};
+	};
+
+	/* The vendor's PWR_GPIO6/8 are the PWR_WAKEUP0 and PWR_BUTTON1 pads. */
+	i2c4_cfg: i2c4-cfg {
+		i2c4-pins {
+			pinmux = <PINMUX(PIN_PWR_WAKEUP0, 5)>,
+				 <PINMUX(PIN_PWR_BUTTON1, 5)>;
+			bias-pull-up;
+			power-source = <1800>;
+		};
+	};
+};
+
+&porte {
+	gpio-line-names =
+		"lcd-reset",         /* 0, active low */
+		"cam-reset",         /* 1, active low */
+		"lcd-backlight",     /* 2, PWM10 */
+		"tp-irq",            /* 3 */
+		"tp-reset";          /* 4, active low */
+};
+
+/* SoC IRQ 9: GIC SPI 9 on the A53, PLIC source 25 on the C906. */
+&cvi_vpss {
+	interrupts = <SOC_PERIPHERAL_IRQ(9) IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "sc";
+};
+
+&pwm2 {
+	status = "okay";
+};
+
+&i2c4 {
+	pinctrl-0 = <&i2c4_cfg>;
+	pinctrl-names = "default";
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@5a {
+		compatible = "hynitron,cst340";
+		reg = <0x5a>;
+		pinctrl-0 = <&tp_cfg>;
+		pinctrl-names = "default";
+		interrupt-parent = <&porte>;
+		interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&porte 4 GPIO_ACTIVE_LOW>;
+		touchscreen-size-x = <368>;
+		touchscreen-size-y = <552>;
+	};
+};

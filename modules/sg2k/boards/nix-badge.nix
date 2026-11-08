@@ -10,6 +10,13 @@ let
 in
 {
   config = lib.mkIf (config.hardware.sg2k.enable && config.hardware.sg2k.board == "nix-badge") {
+    assertions = [
+      {
+        assertion = !config.hardware.sg2k.dsiPanel.enable;
+        message = "hardware.sg2k.dsiPanel.enable is for the LicheeRV Nano";
+      }
+    ];
+
     hardware.sg2k = {
       soc = mkDefault "sg2000";
       cores = mkDefault (import ./table.nix).nix-badge.cores;

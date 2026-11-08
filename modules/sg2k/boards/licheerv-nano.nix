@@ -22,10 +22,13 @@ in
           inherit (cfg) core;
           dtsFragments =
             lib.optional (!cfg.wifi.enable) "licheerv-nano-no-wifi.dtsi"
-            ++ lib.optional (!cfg.ethernet.enable) "licheerv-nano-no-ethernet.dtsi";
+            ++ lib.optional (!cfg.ethernet.enable) "licheerv-nano-no-ethernet.dtsi"
+            ++ lib.optional cfg.dsiPanel.enable "licheerv-nano-dsi-panel.dtsi";
         }
       );
-      firmware.fips = mkDefault pkgs.buildPackages.sg2k-fips-licheerv-nano;
+      firmware.fips = mkDefault (
+        pkgs.buildPackages.sg2k-fips-licheerv-nano.override { touchPads = cfg.dsiPanel.enable; }
+      );
 
       ethernet.enable = mkDefault true;
       wifi.enable = mkDefault true;

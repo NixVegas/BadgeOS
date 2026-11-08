@@ -92,6 +92,12 @@ The firmware on its own is in `licheerv-nano-fip` (the polyglot), `licheerv-nano
 and `licheerv-nano-fip-riscv`, and the two systems deploy as `licheerv-nano-arm` and
 `licheerv-nano-riscv` (see [Updating](updating.md)).
 
+The MaixCAM is a Nano on a carrier with an ST7701 368x552 DSI panel and a Hynitron CST340
+touchscreen. `hardware.sg2k.dsiPanel.enable` turns them on: the device tree gets the
+panel, its backlight and the touchscreen, the fip releases the touchscreen's pads from the
+RTC power sequencer, and `st7701-panel-init` brings the panel up at boot on colour bars.
+The touchscreen is an ordinary input device.
+
 ### Other boards
 
 If your board is close to one of these but not quite the same, everything a board file
