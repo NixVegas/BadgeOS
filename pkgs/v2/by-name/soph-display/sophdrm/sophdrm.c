@@ -1080,17 +1080,17 @@ static void soph_pipe_update(struct drm_simple_display_pipe *pipe,
 	spin_unlock_irq(&crtc->dev->event_lock);
 }
 
-/* The two modes the connector offers, and nothing else: see soph_read_mode(). */
+/* Only the two modes the connector offers (see soph_read_mode()), as whole timings. */
 static enum drm_mode_status
 soph_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 		     const struct drm_display_mode *mode)
 {
 	struct soph_drm *sd = to_soph(pipe->crtc.dev);
+	const unsigned int match = DRM_MODE_MATCH_TIMINGS | DRM_MODE_MATCH_CLOCK |
+				   DRM_MODE_MATCH_FLAGS;
 
-	if (soph_mode_is_native(sd, mode))
-		return MODE_OK;
-	if (mode->hdisplay == sd->gop_mode.hdisplay &&
-	    mode->vdisplay == sd->gop_mode.vdisplay)
+	if (drm_mode_match(mode, &sd->native_mode, match) ||
+	    drm_mode_match(mode, &sd->gop_mode, match))
 		return MODE_OK;
 	return MODE_BAD;
 }
