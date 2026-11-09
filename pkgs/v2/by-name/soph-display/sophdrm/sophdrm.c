@@ -1404,6 +1404,7 @@ static void soph_fill_mode(struct drm_display_mode *m,
 	}
 
 	m->clock = (u32)((u64)m->htotal * m->vtotal * refresh / 1000);
+	m->flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC;
 	m->type = DRM_MODE_TYPE_DRIVER;
 	drm_mode_set_name(m);
 }
