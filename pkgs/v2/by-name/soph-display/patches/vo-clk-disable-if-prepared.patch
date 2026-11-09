@@ -1,0 +1,42 @@
+vo: disable clocks only when the framework holds them enabled
+
+vo_create_instance() tests the hardware gate before disabling clk_disp,
+clk_bt and clk_dsi. The bootloader leaves those gates on, so the clock
+framework refuses each disable and warns. Test the framework's own state.
+
+Signed-off-by: badgeos
+---
+--- a/interdrv/vo/chip/cv181x/vo.c
++++ b/interdrv/vo/chip/cv181x/vo.c
+@@ -308,6 +308,15 @@
+ #endif //(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+ extern bool __clk_is_enabled(struct clk *clk);
+ 
++#include <linux/clk-provider.h>
++
++/* Undo only enables made through the clock framework; the bootloader's gates are not ours. */
++static void vo_clk_disable_if_prepared(struct clk *clk)
++{
++	if (clk && clk_hw_is_prepared(__clk_get_hw(clk)))
++		clk_disable_unprepare(clk);
++}
++
+ static int _vo_create_proc(struct cvi_vo_dev *vdev)
+ {
+ 	int ret = 0;
+@@ -2485,12 +2496,9 @@
+ 	}
+ 
+ 	if (!smooth) {
+-		if (vdev->clk_disp && __clk_is_enabled(vdev->clk_disp))
+-			clk_disable_unprepare(vdev->clk_disp);
+-		if (vdev->clk_bt && __clk_is_enabled(vdev->clk_bt))
+-			clk_disable_unprepare(vdev->clk_bt);
+-		if (vdev->clk_dsi && __clk_is_enabled(vdev->clk_dsi))
+-			clk_disable_unprepare(vdev->clk_dsi);
++		vo_clk_disable_if_prepared(vdev->clk_disp);
++		vo_clk_disable_if_prepared(vdev->clk_bt);
++		vo_clk_disable_if_prepared(vdev->clk_dsi);
+ 	}
+ 
+ 	ret = _vo_create_proc(vdev);
