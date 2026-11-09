@@ -169,6 +169,10 @@ in
     patch = ./lt8912b-soft-power-on-errors.patch;
   }
   {
+    name = "lt8912b-hdmi-mode-from-state";
+    patch = ./lt8912b-hdmi-mode-from-state.patch;
+  }
+  {
     name = "sophgo-soc-features-config";
     patch = null;
     structuredExtraConfig = with lib.kernel; {
