@@ -1,0 +1,37 @@
+lontium-lt8912b: return I2C errors from soft power-on
+
+lt8912_soft_power_on() ignores the result of its three I2C stages, sets
+is_power_on and returns 0, so a failed initialisation is reported as
+success and never retried. Return the first error and set is_power_on
+only once all three stages have succeeded.
+
+Signed-off-by: badgeos
+---
+--- a/drivers/gpu/drm/bridge/lontium-lt8912b.c
++++ b/drivers/gpu/drm/bridge/lontium-lt8912b.c
+@@ -403,13 +403,22 @@
+ 
+ static int lt8912_soft_power_on(struct lt8912 *lt)
+ {
++	int ret;
++
+ 	if (!lt->is_power_on) {
+ 		u32 lanes = lt->data_lanes;
+ 
+-		lt8912_write_init_config(lt);
+-		regmap_write(lt->regmap[I2C_CEC_DSI], 0x13, lanes & 3);
++		ret = lt8912_write_init_config(lt);
++		if (ret)
++			return ret;
++
++		ret = regmap_write(lt->regmap[I2C_CEC_DSI], 0x13, lanes & 3);
++		if (ret)
++			return ret;
+ 
+-		lt8912_write_mipi_basic_config(lt);
++		ret = lt8912_write_mipi_basic_config(lt);
++		if (ret)
++			return ret;
+ 
+ 		lt->is_power_on = true;
+ 	}

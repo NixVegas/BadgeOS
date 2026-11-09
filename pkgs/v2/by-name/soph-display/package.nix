@@ -32,6 +32,7 @@ stdenv.mkDerivation {
     ./patches/scaler-disp-set-layer.patch
     ./patches/vcodec-reset-on-probe.patch
     ./patches/scaler-dsi-set-eot.patch
+    ./patches/vo-clk-disable-if-prepared.patch
   ];
 
   postPatch = ''

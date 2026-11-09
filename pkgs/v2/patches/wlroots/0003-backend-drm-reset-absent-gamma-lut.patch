@@ -1,0 +1,17 @@
+backend/drm: allow a gamma reset when no LUT is available
+
+Resetting an absent gamma LUT needs no hardware operation. Return
+success so the reset does not reject an otherwise valid output commit.
+
+--- a/backend/drm/legacy.c
++++ b/backend/drm/legacy.c
+@@ -255,7 +255,8 @@
+ 		// The legacy interface doesn't offer a way to reset the gamma LUT
+ 		size = drm_crtc_get_gamma_lut_size(drm, crtc);
+ 		if (size == 0) {
+-			return false;
++			// There is no LUT to reset.
++			return true;
+ 		}
+ 
+ 		linear_lut = malloc(3 * size * sizeof(uint16_t));

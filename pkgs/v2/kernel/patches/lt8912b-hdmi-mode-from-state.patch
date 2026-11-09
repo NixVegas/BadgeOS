@@ -1,0 +1,41 @@
+lontium-lt8912b: take HDMI mode from the atomic state
+
+lt8912_video_setup() reads is_hdmi from the connector the bridge creates
+itself, which is never initialised when the display driver attaches with
+DRM_BRIDGE_ATTACH_NO_CONNECTOR, so the bridge runs in DVI mode. Take the
+connector from the atomic state at enable and keep its is_hdmi for the
+resume path.
+
+Signed-off-by: badgeos
+---
+--- a/drivers/gpu/drm/bridge/lontium-lt8912b.c
++++ b/drivers/gpu/drm/bridge/lontium-lt8912b.c
+@@ -49,6 +49,7 @@
+ 
+ 	u8 data_lanes;
+ 	bool is_power_on;
++	bool is_hdmi;
+ };
+ 
+ static int lt8912_write_init_config(struct lt8912 *lt)
+@@ -396,7 +397,7 @@
+ 	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xab, BIT(1),
+ 				  hsync_activehigh ? BIT(1) : 0);
+ 	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xb2, BIT(0),
+-				  lt->connector.display_info.is_hdmi || hdmi_audio ? BIT(0) : 0);
++				  lt->is_hdmi || hdmi_audio ? BIT(0) : 0);
+ 
+ 	return ret;
+ }
+@@ -548,6 +549,11 @@
+ 				 struct drm_atomic_commit *commit)
+ {
+ 	struct lt8912 *lt = bridge_to_lt8912(bridge);
++	struct drm_connector *connector;
++
++	connector = drm_atomic_get_new_connector_for_encoder(commit,
++							     bridge->encoder);
++	lt->is_hdmi = connector && connector->display_info.is_hdmi;
+ 
+ 	lt8912_video_on(lt);
+ }
