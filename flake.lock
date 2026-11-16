@@ -232,6 +232,21 @@
         "type": "github"
       }
     },
+    "nidhogg-manifest": {
+      "locked": {
+        "lastModified": 1794900608,
+        "narHash": "sha256-smFOGT5mbHrSEEG183Uvn4ldZSZzlL+T6GxMlOpsc3o=",
+        "owner": "NixVegas",
+        "repo": "nidhogg-manifest",
+        "rev": "6ac92d6c9504e81509e2d45a4fe6ec88edbe9ee0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixVegas",
+        "repo": "nidhogg-manifest",
+        "type": "github"
+      }
+    },
     "nixpkcs": {
       "inputs": {
         "flake-parts": "flake-parts_2",
@@ -429,6 +444,7 @@
         "flake-compat": "flake-compat_2",
         "flake-parts": "flake-parts",
         "flakever": "flakever",
+        "nidhogg-manifest": "nidhogg-manifest",
         "nixpkcs": "nixpkcs",
         "nixpkgs": "nixpkgs",
         "nixpkgs-2605": "nixpkgs-2605",

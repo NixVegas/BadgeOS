@@ -38,6 +38,8 @@
       url = "github:NixVegas/autopen/hardware-signing-experiments";
       inputs.nixpkgs.follows = "nixpkgs-2605";
     };
+    # Eval manifests for cache.nixos.lv (flake/manifest.nix). It has no inputs.
+    nidhogg-manifest.url = "github:NixVegas/nidhogg-manifest";
   };
 
   outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } ./flake;
