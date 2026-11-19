@@ -56,7 +56,7 @@ let
       ${lib.optionalString (
         sg2k.display.rotation == 270
       ) "input type:touch calibration_matrix 0 -1 1 1 0 0"}
-    ''}'';
+    ''}${cfg.extraConfig}'';
 in
 {
   options.badge.graphics = {
@@ -98,6 +98,13 @@ in
       default = [ ];
       example = [ "/run/current-system/sw/bin/badge-demo" ];
       description = "Commands the sway config starts (`exec`), in order.";
+    };
+
+    extraConfig = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      internal = true;
+      description = "Sway configuration other modules append, such as the touch bar.";
     };
   };
 

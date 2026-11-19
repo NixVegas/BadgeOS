@@ -112,6 +112,17 @@ The SoC turns the panel's picture by default (`hardware.sg2k.display.rotation = 
 which adjusts the touch coordinates and reserves 32 MiB of contiguous memory. Set it to
 `270` to turn it the other way, or to `0` to leave the turning to Sway, which is slower.
 
+### Touch desktop
+
+On the panel's desktop a touch menu runs along the bottom of the screen. Its Home has
+Tools (a terminal and system information) and Settings. Set
+`badge.graphics.touchBar.enable = false` for Sway without it.
+
+Settings has Display, with the brightness.
+
+Each app gets a Close button, and the ones that take text a Keyboard button for the
+on-screen keyboard. Apps take longer to open on the RISC-V core.
+
 ### Other boards
 
 If your board is close to one of these but not quite the same, everything a board file

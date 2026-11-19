@@ -28,6 +28,7 @@ in
   sway-unwrapped = addPatches prev.sway-unwrapped (
     (import ./sway) ++ prev.lib.optional withRgb888 ./sway/0002-panel-rgb888.patch
   );
+  wvkbd = addPatches prev.wvkbd (import ./wvkbd);
 
   # On the badge, prev.sdl3 is already trimmed (overlays/graphics.nix); the patches
   # go on top of that. sdl2-compat runs on this sdl3, so SDL2 apps get them too.
