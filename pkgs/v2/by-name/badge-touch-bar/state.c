@@ -85,9 +85,22 @@ unsigned state_step(struct state *s, const struct config *c, struct event e, uin
             home(s);
         }
         else if (s->phase == SETTINGS) s->phase = HOME;
+        else if (s->phase == DISPLAY_SIZE && !s->display_busy) { s->phase = DISPLAY; s->error[0] = 0; }
         else if ((s->phase == DISPLAY || s->phase == RADIOS) && !s->setting_busy)
             s->phase = SETTINGS;
         else if (s->phase == SETTING && !s->setting_busy) s->phase = RADIOS;
+        break;
+    case TAP_SIZE:
+        if (s->phase == DISPLAY && s->half_mode) s->phase = DISPLAY_SIZE;
+        break;
+    case TAP_FULL: case TAP_HALF:
+        if (s->phase == DISPLAY_SIZE && !s->display_busy) {
+            s->display_busy = true;
+            effects = e.type == TAP_FULL ? FULL_SIZE : HALF_SIZE;
+        }
+        break;
+    case DISPLAY_DONE:
+        s->display_busy = false;
         break;
     case TAP_DISPLAY:
         if (s->phase == SETTINGS) s->phase = DISPLAY;

@@ -65,6 +65,12 @@ void bar_render(const struct state *s, const struct config *c, int width, bool r
         block(rows, s, "disabled", "Opening…", usable, false, true, false);
     } else if (s->phase == ERROR_SHOWN) {
         block(rows, s, "disabled", s->error, usable, false, false, true);
+    } else if (s->phase == DISPLAY_SIZE) {
+        int part = usable / 3;
+        block(rows, s, "full", "Full", part, !s->display_busy, !s->half_size, false);
+        block(rows, s, "half", "Half", part, !s->display_busy, s->half_size, false);
+        block(rows, s, s->error[0] ? "error" : "back", s->error[0] ? "!" : "Back",
+              usable - part * 2, !s->display_busy, false, s->error[0]);
     } else if (s->phase == SETTING) {
         int i = s->setting;
         const struct setting_status *status = &s->setting_status[i];
@@ -79,7 +85,7 @@ void bar_render(const struct state *s, const struct config *c, int width, bool r
         if (join) block(rows, s, "join", c->settings[i].join_label, part * 2, !s->setting_busy, false, false);
         block(rows, s, "back", "Back", usable - (n - 1) * part, !s->setting_busy, false, false);
     } else if (s->phase == SETTINGS) {
-        bool display = c->backlight[0];
+        bool display = c->backlight[0] || s->half_mode;
         int n = 1 + display + (c->setting_count > 0), part = usable / n;
         if (display) block(rows, s, "display", "Display", part, true, false, false);
         if (c->setting_count) block(rows, s, "radios", "Radios", part, true, false, false);
@@ -93,9 +99,11 @@ void bar_render(const struct state *s, const struct config *c, int width, bool r
         }
         block(rows, s, "back", "Back", usable - (n - 1) * part, true, false, false);
     } else if (s->phase == DISPLAY) {
-        int n = 5, part = usable / n;
-        block(rows, s, "dim", "Brightness −", part * 2, true, false, false);
-        block(rows, s, "bright", "Brightness +", part * 2, true, false, false);
+        bool light = c->backlight[0];
+        int n = 1 + 4 * light + 2 * s->half_mode, part = usable / n;
+        if (light) block(rows, s, "dim", "Brightness −", part * 2, true, false, false);
+        if (light) block(rows, s, "bright", "Brightness +", part * 2, true, false, false);
+        if (s->half_mode) block(rows, s, "size", "Display size", part * 2, true, false, false);
         block(rows, s, "back", "Back", usable - (n - 1) * part, true, false, false);
     } else {
         bool busy = s->phase == APP;
@@ -146,6 +154,7 @@ bool bar_click(json_object *click, const struct state *s, const struct config *c
         {"error", TAP_ERROR}, {"dim", TAP_DIM}, {"bright", TAP_BRIGHT},
         {"display", TAP_DISPLAY}, {"radios", TAP_RADIOS}, {"enable", TAP_ENABLE}, {"disable", TAP_DISABLE},
         {"join", TAP_JOIN}, {"keyboard", TAP_KEYBOARD},
+        {"size", TAP_SIZE}, {"full", TAP_FULL}, {"half", TAP_HALF},
     };
     for (size_t i = 0; i < sizeof(actions)/sizeof(actions[0]); i++)
         if (!strcmp(name, actions[i].name)) { e->type = actions[i].type; return true; }

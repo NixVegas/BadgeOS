@@ -33,16 +33,36 @@ let
       join_app = "bluetooth-devices";
       join_label = "Devices…";
     };
+  # The bar in Full; it halves both in Half.
   barHeight = 48;
   fontSize = 14;
   font = "DejaVu Sans";
-  footApp = args: "${lib.getExe pkgs.foot} ${args} --font=DejaVuSansMono:size=10";
+  outputScale = pkgs.writeShellApplication {
+    name = "badge-output-scale";
+    runtimeInputs = [
+      config.programs.sway.package
+      pkgs.jq
+    ];
+    runtimeEnv.BADGE_OUTPUT_NAME = graphics.outputName;
+    text = builtins.readFile ../../pkgs/v2/by-name/badge-touch-bar/output-scale.sh;
+  };
+  # The terminal apps' font, halved when they start in Half.
+  panelFoot = pkgs.writeShellApplication {
+    name = "badge-panel-foot";
+    runtimeInputs = [
+      pkgs.foot
+      outputScale
+    ];
+    text = ''exec foot --font="DejaVuSansMono:size=$((10 / $(badge-output-scale)))" "$@"'';
+  };
+  footApp = args: "${lib.getExe panelFoot} ${args}";
   keyboard = pkgs.writeShellApplication {
     name = "badge-panel-keyboard";
-    runtimeInputs = [ pkgs.wvkbd ];
-    runtimeEnv = {
-      BADGE_FONT = font;
-    };
+    runtimeInputs = [
+      pkgs.wvkbd
+      outputScale
+    ];
+    runtimeEnv.BADGE_FONT = font;
     text = builtins.readFile ../../pkgs/v2/by-name/badge-touch-bar/keyboard.sh;
   };
   keyboardReady = pkgs.writeShellApplication {
@@ -112,7 +132,7 @@ let
         ExecStop = lib.mkIf (!app.hideBar) "${windowClose} ${lib.escapeShellArg app.appId}";
         ExecStopPost = lib.mkIf app.hideBar "-${swaymsg} -q bar touch mode dock";
         TimeoutStopSec = lib.mkIf (!app.hideBar) (lib.mkDefault cfg.limits.stop);
-        SuccessExitStatus = lib.optionals (lib.hasPrefix "${lib.getExe pkgs.foot} " app.command) [ 1 ];
+        SuccessExitStatus = lib.optionals (lib.hasPrefix "${lib.getExe panelFoot} " app.command) [ 1 ];
       };
     }
   ) (lib.filterAttrs (_: app: !app.system) cfg.apps);
@@ -131,6 +151,9 @@ let
     builtins.toJSON {
       output = graphics.outputName;
       inherit (cfg) backlight;
+      bar_height = barHeight;
+      font_size = fontSize;
+      inherit font;
       inherit settings;
       apps = lib.sort (a: b: rank a.id < rank b.id) (
         lib.mapAttrsToList (id: app: {

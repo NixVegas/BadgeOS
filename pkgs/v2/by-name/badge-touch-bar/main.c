@@ -11,14 +11,15 @@
 #include <time.h>
 #include <unistd.h>
 
-enum job_type { NONE, IMPORT, OUTPUTS, TREE, UNIT, LAUNCH, STOP_UNIT, SETTING_READ, SETTING_START, SETTING_STOP, KEYBOARD_START, KEYBOARD_TOGGLE };
+enum job_type { NONE, IMPORT, OUTPUTS, TREE, UNIT, LAUNCH, STOP_UNIT, SETTING_READ, SETTING_START, SETTING_STOP, KEYBOARD_START, KEYBOARD_TOGGLE, DISPLAY_MODE, BAR_SIZE };
 struct runtime {
     struct config config;
     struct state state;
     struct process subscriber, job;
     enum job_type job_type;
-    int job_app, start_app, stop_app, check_app;
+    int job_app, start_app, stop_app, check_app, display_mode;
     struct output output;
+    bool layout_pending;
     uint64_t unit_poll_at, job_deadline, reconnect_at, windows[MAX_APPS];
     struct unit_state units[MAX_APPS];
     unsigned unit_mask, setting_mask;
@@ -42,6 +43,7 @@ static uint64_t now_ms(void) {
 }
 
 static void effects(struct runtime *r, unsigned effect) {
+    if (effect & (FULL_SIZE | HALF_SIZE)) r->display_mode = effect & HALF_SIZE ? 2 : 1;
     if (effect & TOGGLE_KEYBOARD) r->keyboard_start = r->state.app;
     if (effect & READ_SETTINGS) r->setting_mask = (1u << r->config.setting_count) - 1;
     if (effect & ENABLE_SETTING) r->start_setting = r->state.setting;
@@ -71,8 +73,10 @@ static void disconnect_sway(struct runtime *r) {
     r->start_app = r->stop_app = r->check_app = -1;
     r->unit_poll_at = r->unit_mask = r->setting_mask = 0;
     r->start_setting = r->stop_setting = r->keyboard_start = r->keyboard_toggle = -1;
+    r->display_mode = 0;
+    r->layout_pending = false;
     r->state.keyboard_busy = false;
-    r->state.setting_busy = false;
+    r->state.setting_busy = r->state.display_busy = false;
     r->reconnect_at = now_ms() + 1000;
     r->state.revision++;
 }
@@ -142,9 +146,24 @@ static bool consume_subscription(struct runtime *r) {
 static void start_job(struct runtime *r) {
     if (r->job.pid || !r->subscribed) return;
     char *args[20] = {0};
+    char command[512];
     int app = -1;
     enum job_type type = NONE;
-    if (r->stop_app >= 0) { type=STOP_UNIT; app=r->stop_app; r->stop_app=-1; }
+    if (r->display_mode) {
+        type=DISPLAY_MODE;
+        snprintf(command, sizeof(command), "output %s mode %dx%d", r->config.output,
+                 r->output.full_width / r->display_mode, r->output.full_height / r->display_mode);
+        args[0]="swaymsg"; args[1]="-q"; args[2]=command;
+        r->display_mode=0;
+    } else if (r->layout_pending) {
+        type=BAR_SIZE;
+        /* Height last: after a font change swaybar draws again only once its size changes. */
+        snprintf(command, sizeof(command), "bar touch font pango:%s %d; bar touch height %d", r->config.font,
+                 r->config.font_size / r->output.scale, r->config.bar_height / r->output.scale);
+        args[0]="swaymsg"; args[1]="-q"; args[2]=command;
+        r->layout_pending=false;
+    }
+    else if (r->stop_app >= 0) { type=STOP_UNIT; app=r->stop_app; r->stop_app=-1; }
     else if (r->want_import) {
         type=IMPORT; r->want_import=false;
         char *import[] = {"systemctl", "--user", "import-environment", "WAYLAND_DISPLAY", "SWAYSOCK",
@@ -216,6 +235,7 @@ static void start_job(struct runtime *r) {
     }
     r->job_type=type; r->job_app=app;
     if (!process_start(&r->job, args)) {
+        if (type == DISPLAY_MODE) dispatch(r, (struct event){.type=DISPLAY_DONE});
         if (type == UNIT && r->syncing) disconnect_sway(r);
         else if (type != UNIT) dispatch(r, (struct event){
             .type=(type == KEYBOARD_START || type == KEYBOARD_TOGGLE) ? KEYBOARD_DONE :
@@ -239,7 +259,12 @@ static void finish_job(struct runtime *r, bool timeout) {
         ok=reply != NULL;
     }
     if (ok && type==OUTPUTS) {
-        r->output=sway_output(reply, r->config.output);
+        struct output output=sway_output(reply, r->config.output);
+        /* The sway config sizes the bar for Full. */
+        if (output.width && output.scale != r->output.scale) r->layout_pending=true;
+        r->output=output;
+        r->state.half_mode=output.half;
+        r->state.half_size=output.scale > 1;
         r->state.revision++;
     }
     else if (ok && type==TREE) {
@@ -264,6 +289,10 @@ static void finish_job(struct runtime *r, bool timeout) {
     if (reply) json_object_put(reply);
     process_clear(&r->job);
     r->job_type=NONE; r->job_deadline=0;
+    if (type == DISPLAY_MODE) {
+        dispatch(r, (struct event){.type=DISPLAY_DONE});
+        r->want_outputs=true;
+    }
     if (type == KEYBOARD_START || type == KEYBOARD_TOGGLE) {
         if (ok && type == KEYBOARD_START) r->keyboard_toggle=app;
         else dispatch(r, (struct event){.type=KEYBOARD_DONE, .app=app,
@@ -309,7 +338,7 @@ static uint64_t earlier(uint64_t a, uint64_t b) { return !a || (b && b<a) ? b : 
 
 int main(int argc, char **argv) {
     if (argc!=2) { fprintf(stderr, "usage: badge-touch-bar CONFIG.json\n"); return 2; }
-    struct runtime r={.subscriber.fd=-1, .job.fd=-1, .start_app=-1, .stop_app=-1, .check_app=-1, .start_setting=-1, .stop_setting=-1, .keyboard_start=-1, .keyboard_toggle=-1, .syncing=true};
+    struct runtime r={.output.scale=1, .subscriber.fd=-1, .job.fd=-1, .start_app=-1, .stop_app=-1, .check_app=-1, .start_setting=-1, .stop_setting=-1, .keyboard_start=-1, .keyboard_toggle=-1, .syncing=true};
     if (!config_load(&r.config, argv[1])) return 2;
     state_init(&r.state);
     r.state.revision=(now_ms()<<16) ^ (unsigned)getpid();

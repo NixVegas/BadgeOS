@@ -28,8 +28,12 @@ bool config_load(struct config *c, const char *path) {
     json_object *o = json_object_from_file(path), *apps, *v;
     bool ok = false;
     if (!o || !field(c->output, sizeof(c->output), o, "output") ||
+        !field(c->font, sizeof(c->font), o, "font") ||
         !json_object_object_get_ex(o, "apps", &apps) || !json_object_is_type(apps, json_type_array)) goto out;
     field(c->backlight, sizeof(c->backlight), o, "backlight"); /* Optional: no Brightness without it. */
+    if (json_object_object_get_ex(o, "bar_height", &v)) c->bar_height = json_object_get_int(v);
+    if (json_object_object_get_ex(o, "font_size", &v)) c->font_size = json_object_get_int(v);
+    if (c->bar_height < 2 || c->font_size < 2) goto out;
     size_t n = json_object_array_length(apps);
     if (n > MAX_APPS) goto out;
     for (size_t i = 0; i < n; i++) {

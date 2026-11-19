@@ -124,7 +124,10 @@ Their driver loads the first time you do, and stays loaded after that. There's n
 boot either: connect a Bluetooth audio device from Settings, under Bluetooth, and sound
 follows it, in the games too. A Nano without the menu keeps its usual radio defaults.
 
-Settings has Display and Radios (WiFi and Bluetooth). Display has the brightness.
+Settings has Display and Radios (WiFi and Bluetooth).
+Display has the brightness and Display size, with Full and Half. Half draws the desktop at
+half the resolution and the driver doubles it back up; it needs the hardware rotation, which
+is the default, and without it Display has the brightness alone.
 
 Doom and Quake hide the bar while they run, so quit from the game's own menu. Other apps
 get a Close button, and the ones that take text a Keyboard button for the on-screen

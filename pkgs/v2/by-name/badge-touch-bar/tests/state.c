@@ -79,8 +79,6 @@ static void settings(void)
     state_step(&s, &config, (struct event){.type = SETTING_FAILED, .error = "Stop failed"}, 7);
     assert(!s.setting_busy && s.error[0]);
     assert(step(&s, TAP_BACK, 8) == 0 && s.phase == RADIOS && step(&s, TAP_BACK, 8) == 0 && s.phase == SETTINGS);
-    assert(step(&s, TAP_DISPLAY, 9) == 0 && s.phase == DISPLAY && step(&s, TAP_DIM, 10) == DIM);
-    assert(step(&s, TAP_BACK, 11) == 0 && s.phase == SETTINGS);
 }
 
 static void app_controls(void)
@@ -102,12 +100,40 @@ static void app_controls(void)
     assert(state_step(&s, &config, (struct event){.type = UNIT_CHANGED}, 4) == 0 && s.phase == GROUP);
 }
 
+static void display_size(void)
+{
+    struct state s;
+    state_init(&s);
+    step(&s, TAP_SETTINGS, 0);
+    step(&s, TAP_DISPLAY, 1);
+    /* Without a half mode the Display page holds Brightness alone. */
+    assert(step(&s, TAP_DIM, 1) == DIM && step(&s, TAP_SIZE, 1) == 0 && s.phase == DISPLAY);
+    s.half_mode = true;
+    assert(step(&s, TAP_SIZE, 2) == 0 && s.phase == DISPLAY_SIZE);
+    assert(step(&s, TAP_HALF, 3) == HALF_SIZE);
+    assert(step(&s, TAP_FULL, 4) == 0);
+    assert(step(&s, TAP_BACK, 5) == 0 && s.phase == DISPLAY_SIZE && s.display_busy);
+    s.setting = 0; /* A radio read queued before entering Display size. */
+    state_step(&s, &config, (struct event){.type=SETTING_CHANGED, .app=0}, 6);
+    step(&s, SETTING_FAILED, 6);
+    step(&s, OP_FAILED, 6);
+    assert(s.display_busy && step(&s, TAP_FULL, 6) == 0);
+    assert(step(&s, TAP_BACK, 6) == 0 && s.phase == DISPLAY_SIZE);
+    step(&s, DISPLAY_DONE, 6);
+    assert(step(&s, TAP_FULL, 7) == FULL_SIZE);
+    step(&s, DISPLAY_DONE, 8);
+    step(&s, OP_FAILED, 8);
+    assert(s.error[0] && !s.display_busy);
+    assert(step(&s, TAP_BACK, 9) == 0 && s.phase == DISPLAY && !s.display_busy);
+    assert(step(&s, TAP_BACK, 10) == 0 && s.phase == SETTINGS);
+}
+
 /* One app per letter, grouped by the letter. */
 static bool load(const char *groups)
 {
     struct config c;
     FILE *f = fopen("state-test.json", "w");
-    fputs("{\"output\":\"o\",\"backlight\":\"b\",\"apps\":[", f);
+    fputs("{\"output\":\"o\",\"backlight\":\"b\",\"font\":\"f\",\"bar_height\":48,\"font_size\":14,\"apps\":[", f);
     for (int i = 0; groups[i]; i++)
         fprintf(f, "%s{\"id\":\"a%d\",\"label\":\"A\",\"unit\":\"a%d.service\",\"app_id\":\"a%d\",\"group\":\"%c\"}",
                 i ? "," : "", i, i, i, groups[i]);
@@ -119,6 +145,7 @@ int main(void)
     lifecycle();
     settings();
     app_controls();
+    display_size();
     /* Home holds three groups and Settings; a group holds three apps and Back. */
     assert(load("GGDDTTT") && !load("GDTX") && !load("GGGGD"));
     puts("state transitions passed");
