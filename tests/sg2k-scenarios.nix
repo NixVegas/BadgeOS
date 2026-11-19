@@ -55,7 +55,7 @@ in
     ++ lib.optional (!c.hardware.sg2k.memory.stripModuleSymbols) "the panel keeps its module symbols"
     ++ lib.optional (
       lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps)
-      != "info terminal wifi-join"
+      != "bluetooth-devices info terminal wifi-join"
     ) "full menu differs"
     ++ lib.optional (
       !lib.all (a: a.system || c.systemd.user.services ? ${lib.removeSuffix ".service" a.unit}) (

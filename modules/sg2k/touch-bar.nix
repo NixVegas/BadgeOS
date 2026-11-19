@@ -12,15 +12,26 @@ let
   enabled = sg2k.enable && graphics.enable && cfg.enable;
   tools = pkgs.badge-panel-tools;
   wifi = sg2k.wifi.enable && sg2k.wifi.onDemand;
-  settings = lib.optional wifi {
-    id = "wifi";
-    label = "WiFi";
-    unit = "nix-badge-wifi.service";
-    status_command = lib.getExe' tools "badge-panel-wifi-status";
-    stop_command = lib.getExe' tools "badge-panel-wifi-disable";
-    join_app = "wifi-join";
-    join_label = "Join…";
-  };
+  bluetooth = wifi && config.hardware.bluetooth.enable;
+  settings =
+    lib.optional wifi {
+      id = "wifi";
+      label = "WiFi";
+      unit = "nix-badge-wifi.service";
+      status_command = lib.getExe' tools "badge-panel-wifi-status";
+      stop_command = lib.getExe' tools "badge-panel-wifi-disable";
+      join_app = "wifi-join";
+      join_label = "Join…";
+    }
+    ++ lib.optional bluetooth {
+      id = "bluetooth";
+      label = "Bluetooth";
+      unit = "badge-panel-bluetooth.service";
+      status_command = lib.getExe' tools "badge-panel-bluetooth-status";
+      stop_command = lib.getExe' tools "badge-panel-bluetooth-disable";
+      join_app = "bluetooth-devices";
+      join_label = "Devices…";
+    };
   barHeight = 48;
   fontSize = 14;
   font = "DejaVu Sans";
@@ -204,6 +215,7 @@ in
         ];
         badge.graphics.backgroundImage = lib.mkDefault "${pkgs.nixos-icons}/share/icons/hicolor/128x128/apps/nix-snowflake.png";
         hardware.sg2k.wifi.onDemand = lib.mkDefault true;
+        hardware.sg2k.wifi.bluetooth = lib.mkIf sg2k.wifi.enable (lib.mkOverride 900 "sdio");
         # The radios take the bar's limits.
         systemd.services = {
           badge-panel-radio-stack = lib.mkIf wifi { serviceConfig.TimeoutStartSec = cfg.limits.start; };
@@ -212,6 +224,15 @@ in
               TimeoutStartSec = cfg.limits.start;
               TimeoutStopSec = cfg.limits.stop;
             };
+          };
+          badge-panel-bluetooth = lib.mkIf bluetooth {
+            serviceConfig = {
+              TimeoutStartSec = cfg.limits.start;
+              TimeoutStopSec = cfg.limits.stop;
+            };
+          };
+          bluetooth = lib.mkIf bluetooth {
+            serviceConfig.TimeoutStartSec = cfg.limits.start;
           };
         };
         badge.graphics.extraConfig = ''
@@ -267,6 +288,12 @@ in
             hidden = true;
             keyboard = true;
             command = "${footApp "--app-id=badge-wifi-join"} ${lib.getExe' tools "badge-panel-wifi-join"}";
+          };
+          bluetooth-devices = lib.mkIf bluetooth {
+            label = "Bluetooth devices";
+            hidden = true;
+            keyboard = true;
+            command = "${footApp "--app-id=badge-bluetooth-devices"} ${lib.getExe' tools "badge-panel-bluetooth-devices"}";
           };
         };
         systemd.user.services = {
