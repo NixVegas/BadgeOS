@@ -16,7 +16,17 @@ let
     # soph_drm's HDMI output, in outputMode.
     output ${cfg.outputName} position 0 0
     ${lib.optionalString (cfg.outputMode != "native") "output ${cfg.outputName} mode ${cfg.outputMode}"}
-    output ${cfg.outputName} bg #101015 solid_color
+    ${
+      if cfg.backgroundImage == null then
+        "output ${cfg.outputName} bg #101015 solid_color"
+      else
+        ''
+          swaybg_command ${
+            lib.getExe (if sg2k.dsiPanel.enable then pkgs.badge-panel-background else pkgs.swaybg)
+          }
+          output ${cfg.outputName} bg ${cfg.backgroundImage} center #101015
+        ''
+    }
 
     # No title bars or gaps: the CPU draws every pixel.
     default_border none
@@ -47,6 +57,12 @@ in
     enable = lib.mkEnableOption "Sway on DRM/KMS, software-rendered" // {
       default = sg2k.dsiPanel.enable;
       defaultText = lib.literalExpression "config.hardware.sg2k.dsiPanel.enable";
+    };
+
+    backgroundImage = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Static image centered on the desktop; null keeps the solid background.";
     };
 
     outputName = lib.mkOption {
