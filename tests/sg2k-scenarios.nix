@@ -28,6 +28,10 @@ let
     dsiPanel.enable = true;
   };
   noBar.badge.graphics.touchBar.enable = false;
+  radios.hardware.sg2k.wifi = {
+    onDemand = true;
+    bluetooth = "sdio";
+  };
   software.hardware.sg2k.coreSelect = {
     enable = true;
     backend = "software";
@@ -50,7 +54,8 @@ in
     ++ lib.optional (c.hardware.sg2k.memory.cmaMiB > 64) "panel reservation exceeds 64 MiB"
     ++ lib.optional (!c.hardware.sg2k.memory.stripModuleSymbols) "the panel keeps its module symbols"
     ++ lib.optional (
-      lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps) != "info terminal"
+      lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps)
+      != "info terminal wifi-join"
     ) "full menu differs"
     ++ lib.optional (
       !lib.all (a: a.system || c.systemd.user.services ? ${lib.removeSuffix ".service" a.unit}) (
@@ -64,6 +69,7 @@ in
     ++ lib.optional (
       c.badge.graphics.touchBar.apps != { } || c.badge.graphics.extraConfig != ""
     ) "the bar is configured"
+    ++ lib.optional c.hardware.sg2k.wifi.onDemand "the radios are on demand"
   );
   sg2k-panel-off = scenario "sg2k-panel-off" [ { badge.graphics.enable = true; } ] (
     c:
@@ -96,6 +102,20 @@ in
     software
     { hardware.sg2k.firmware.fipPath = "/boot/other.bin"; }
   ] (refused "SD firmware at /boot/fip.bin");
+  sg2k-radios-on-demand = scenario "sg2k-radios-on-demand" [ nano radios ] (
+    c:
+    lib.optional (lib.elem "aic8800_fdrv" c.boot.kernelModules) "Wi-Fi starts at boot"
+    ++ lib.optional (
+      !lib.elem "aic8800_fdrv" c.boot.blacklistedKernelModules
+    ) "Wi-Fi modaliases are not held off"
+    ++ lib.optional (
+      !(c.systemd.services ? nix-badge-wifi) || !(c.systemd.services ? badge-panel-bluetooth)
+    ) "radio consumers are missing"
+    ++ lib.optional (c.systemd.services.bluetooth.wantedBy != [ ]) "Bluetooth starts at boot"
+    ++ lib.optional (
+      c.systemd.services.badge-panel-radio-stack.serviceConfig ? ExecStop
+    ) "the shared drivers do not stay loaded"
+  );
 
   sg2k-no-emmc = scenario "sg2k-no-emmc" [ { hardware.sg2k.emmc.enable = false; } ] (
     config:

@@ -118,7 +118,11 @@ On the panel's desktop a touch menu runs along the bottom of the screen. Its Hom
 Tools (a terminal and system information) and Settings. Set
 `badge.graphics.touchBar.enable = false` for Sway without it.
 
-Settings has Display, with the brightness.
+With the menu, WiFi is off at boot, and you turn it on from Settings. Its driver loads the
+first time you do, and stays loaded after that. A Nano without the menu keeps its usual
+radio defaults.
+
+Settings has Display and Radios (WiFi). Display has the brightness.
 
 Each app gets a Close button, and the ones that take text a Keyboard button for the
 on-screen keyboard. Apps take longer to open on the RISC-V core.

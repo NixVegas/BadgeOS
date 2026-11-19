@@ -11,6 +11,16 @@ let
   sg2k = config.hardware.sg2k;
   enabled = sg2k.enable && graphics.enable && cfg.enable;
   tools = pkgs.badge-panel-tools;
+  wifi = sg2k.wifi.enable && sg2k.wifi.onDemand;
+  settings = lib.optional wifi {
+    id = "wifi";
+    label = "WiFi";
+    unit = "nix-badge-wifi.service";
+    status_command = lib.getExe' tools "badge-panel-wifi-status";
+    stop_command = lib.getExe' tools "badge-panel-wifi-disable";
+    join_app = "wifi-join";
+    join_label = "Join…";
+  };
   barHeight = 48;
   fontSize = 14;
   font = "DejaVu Sans";
@@ -95,6 +105,7 @@ let
     }
   ) (lib.filterAttrs (_: app: !app.system) cfg.apps);
   systemApps = map (a: a.unit) (lib.filter (a: a.system) (builtins.attrValues cfg.apps));
+  settingUnits = map (s: s.unit) settings;
   # Games lead the menu in this order; the other apps follow by name.
   rank =
     id:
@@ -108,6 +119,7 @@ let
     builtins.toJSON {
       output = graphics.outputName;
       inherit (cfg) backlight;
+      inherit settings;
       apps = lib.sort (a: b: rank a.id < rank b.id) (
         lib.mapAttrsToList (id: app: {
           inherit id;
@@ -191,6 +203,17 @@ in
           }
         ];
         badge.graphics.backgroundImage = lib.mkDefault "${pkgs.nixos-icons}/share/icons/hicolor/128x128/apps/nix-snowflake.png";
+        hardware.sg2k.wifi.onDemand = lib.mkDefault true;
+        # The radios take the bar's limits.
+        systemd.services = {
+          badge-panel-radio-stack = lib.mkIf wifi { serviceConfig.TimeoutStartSec = cfg.limits.start; };
+          nix-badge-wifi = lib.mkIf wifi {
+            serviceConfig = {
+              TimeoutStartSec = cfg.limits.start;
+              TimeoutStopSec = cfg.limits.stop;
+            };
+          };
+        };
         badge.graphics.extraConfig = ''
           bar {
             id touch
@@ -219,6 +242,9 @@ in
           polkit.addRule(function(action, subject) {
             if (subject.user != "badge" || action.id != "org.freedesktop.systemd1.manage-units") return;
             var unit = action.lookup("unit"), verb = action.lookup("verb");
+            if (${builtins.toJSON settingUnits}.indexOf(unit) >= 0 &&
+                (verb == "start" || verb == "stop" || verb == "restart"))
+              return polkit.Result.YES;
             if (${builtins.toJSON systemApps}.indexOf(unit) >= 0 &&
                 (verb == "start" || verb == "stop") && subject.local && subject.active)
               return polkit.Result.YES;
@@ -235,6 +261,12 @@ in
             label = "Info";
             group = lib.mkDefault "Tools";
             command = "${footApp "--app-id=badge-info"} ${lib.getExe' tools "badge-panel-info"}";
+          };
+          wifi-join = lib.mkIf wifi {
+            label = "Join WiFi";
+            hidden = true;
+            keyboard = true;
+            command = "${footApp "--app-id=badge-wifi-join"} ${lib.getExe' tools "badge-panel-wifi-join"}";
           };
         };
         systemd.user.services = {

@@ -9,6 +9,7 @@
 let
   cfg = config.hardware.sg2k;
   bluetooth = cfg.wifi.bluetooth != "none";
+  radioTools = pkgs.nix-badge-panel-radio;
 
   firmware = pkgs.aic8800-firmware.override { variants = [ cfg.wifi.firmware ]; };
 
@@ -29,11 +30,14 @@ let
   };
 in
 {
+  options.hardware.sg2k.wifi.onDemand =
+    lib.mkEnableOption "on-demand shared WiFi and Bluetooth drivers";
+
   config = lib.mkIf (cfg.enable && cfg.wifi.enable) {
     environment.systemPackages = [ pkgs.iw ] ++ lib.optional bluetooth pkgs.bluez;
 
     hardware.bluetooth.enable = bluetooth;
-    hardware.bluetooth.powerOnBoot = true;
+    hardware.bluetooth.powerOnBoot = !cfg.wifi.onDemand;
     networking.networkmanager.wifi.scanRandMacAddress = false;
 
     hardware.firmware = [ firmware ];
@@ -41,7 +45,14 @@ in
       driver
       sdhci
     ];
-    boot.kernelModules = [
+    boot.kernelModules = lib.optionals (!cfg.wifi.onDemand) [
+      "aic8800_bsp"
+      "aic8800_fdrv"
+      "sdhci-cv181x"
+    ];
+    # Prevent platform/SDIO modaliases from loading the same stack through udev.
+    # Explicit modprobe in the on-demand service still works with these blacklists.
+    boot.blacklistedKernelModules = lib.optionals cfg.wifi.onDemand [
       "aic8800_bsp"
       "aic8800_fdrv"
       "sdhci-cv181x"
@@ -58,5 +69,55 @@ in
     services.udev.extraRules = ''
       SUBSYSTEM=="net", ACTION=="add", ENV{ID_NET_DRIVER}=="aicwf_sdio", RUN+="${lib.getExe pkgs.nix-badge-stable-mac} $name"
     '';
+
+    # The first consumer loads the drivers and they stay loaded: turning a radio off
+    # only switches that radio off.
+    systemd.services = lib.mkIf cfg.wifi.onDemand {
+      badge-panel-radio-stack = {
+        description = "Shared panel radio drivers";
+        requires = [ "NetworkManager.service" ];
+        after = [ "NetworkManager.service" ];
+        restartIfChanged = false;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = lib.getExe' radioTools "nix-badge-panel-radio-stack";
+        };
+      };
+      nix-badge-wifi = {
+        description = "Panel WiFi consumer";
+        bindsTo = [ "badge-panel-radio-stack.service" ];
+        after = [ "badge-panel-radio-stack.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${lib.getExe' radioTools "nix-badge-panel-radio-wifi"} on";
+          ExecStop = "${lib.getExe' radioTools "nix-badge-panel-radio-wifi"} off";
+        };
+      };
+      badge-panel-bluetooth = lib.mkIf config.hardware.bluetooth.enable {
+        description = "Panel Bluetooth consumer";
+        bindsTo = [
+          "badge-panel-radio-stack.service"
+          "bluetooth.service"
+        ];
+        after = [
+          "badge-panel-radio-stack.service"
+          "bluetooth.service"
+        ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${lib.getExe' radioTools "nix-badge-panel-radio-bluetooth"} on";
+          ExecStop = "${lib.getExe' radioTools "nix-badge-panel-radio-bluetooth"} off";
+        };
+      };
+      bluetooth = lib.mkIf config.hardware.bluetooth.enable {
+        wantedBy = lib.mkForce [ ];
+        bindsTo = [ "badge-panel-radio-stack.service" ];
+        after = [ "badge-panel-radio-stack.service" ];
+        unitConfig.StopWhenUnneeded = true;
+      };
+    };
   };
 }
