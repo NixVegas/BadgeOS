@@ -65,8 +65,10 @@ SDIO controller enabled in the device tree.
 The Nano runs one of its two cores, and a small (0201) strap resistor on the board decides
 which one at power-on. It ships set for the RISC-V core, and to boot the ARM core you
 move the resistor to its other position with a soldering iron. There's no switch or
-latch like the badge's, so the core can't be changed from Linux or with a button, and
-`coreSelect.enable` stays off.
+latch like the badge's, so the core can't be changed with a button, and
+`coreSelect.enable` is off by default. With the resistor set for ARM, its software backend
+can reboot into RISC-V and back (see [Switching CPU
+cores](cores.md#software-selection-on-the-nano)).
 
 There are three SD card images for the Nano:
 

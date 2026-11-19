@@ -30,6 +30,7 @@ in
       firmware.fips = mkDefault (
         pkgs.buildPackages.sg2k-fips-licheerv-nano.override {
           touchPads = cfg.dsiPanel.enable;
+          coreTransfer = cfg.coreSelect.enable && cfg.coreSelect.backend == "software";
         }
       );
 

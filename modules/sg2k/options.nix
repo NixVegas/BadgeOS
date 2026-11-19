@@ -141,6 +141,14 @@ in
     sharpPanel.enable = mkEnableOption "the Sharp memory panel as the system console";
     dsiPanel.enable = mkEnableOption "the supported ST7701 DSI panel with CST340 touchscreen and PWM backlight";
     coreSelect.enable = mkEnableOption "switching the boot core from Linux";
+    coreSelect.backend = mkOption {
+      type = types.enum [
+        "latch"
+        "software"
+      ];
+      default = "latch";
+      description = "Use the board's core latch, or guarded SD firmware on an ARM-strapped board.";
+    };
   };
 
   config = lib.mkIf cfg.enable {

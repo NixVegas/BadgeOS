@@ -25,6 +25,8 @@ in
         pkgs.buildPackages.nix-badge-fips {
           secureUboot = config.hardware.sg2k.secureBoot;
           fitKeyCert = config.hardware.sg2k.fitKeyCert;
+          coreTransfer =
+            config.hardware.sg2k.coreSelect.enable && config.hardware.sg2k.coreSelect.backend == "software";
         }
       );
 

@@ -49,6 +49,7 @@ else
         self.nixosConfigurations.${if system == "aarch64-linux" then "badge1-arm" else "badge1-arm-x86_64"};
     };
     boot-dir = pkgs.nix-badge-boot-dir.passthru.tests.boot-dir;
+    core-reboot = pkgs.nix-badge-core-reboot.passthru.tests.reboot;
     dtb-licheerv-nano = import ./dtb-licheerv-nano.nix { inherit pkgs; };
     board-licheerv-nano-riscv = import ./board-licheerv-nano.nix {
       inherit pkgs;

@@ -12,6 +12,7 @@ system for each core, and its single `fip.bin` boots whichever one the strap sel
 [How BadgeOS boots](under-the-hood.md)), so switching cores only takes a reboot. On a
 LicheeRV Nano the strap is a resistor, so switching means moving it (see
 [The LicheeRV Nano](bsp.md#the-licheerv-nano)).
+The software backend below can request RISC-V while the board remains strapped to ARM.
 
 ## The `builtins.currentSystem` switch
 
@@ -54,3 +55,34 @@ deploy instead (see [Updating](updating.md)).
 
 The pure-Nix LED patterns and screens run on either evaluator, but the upstream Nix C API
 evaluator is only available on ARM (see [LED ring and OLED screens](bling.md#evaluators)).
+
+## Software selection on the Nano
+
+Set `hardware.sg2k.coreSelect.enable` with `coreSelect.backend = "software"` to build the
+unsigned polyglot firmware, which can pass the boot to the other core from the SD card.
+The board stays strapped to ARM and needs both cores' payloads in both SD slots.
+Deploying the generation installs its firmware the usual way, through the bootloader.
+Secure boot isn't supported with this backend.
+
+The reboot helper runs as root. Before it changes a boot marker, it checks that BOOT is
+the SD card's FAT partition, that the board booted from the card, that the installed
+firmware is this generation's, and that every payload is there. It saves the old request
+and pending files in a new `/boot/core-reboot-*.orig` directory, flushes the card and
+reboots. If a step fails it puts the old markers back, and it refuses a second request
+while one is running.
+
+A RISC-V request is for the next boot only. The firmware keeps its pending marker as a
+guard against a failed boot, and nothing in BadgeOS marks the RISC-V boot good, so the
+next plain reboot comes up on ARM. To boot RISC-V again, request it again; the new
+request archives the old pending marker.
+
+Request a core and reboot through its guarded service:
+
+```console
+$ sudo systemctl start badge-core-reboot@riscv.service
+$ sudo systemctl start badge-core-reboot@arm.service
+```
+
+To go back to ARM, start `badge-core-reboot@arm.service` rather than rebooting: it clears
+both markers. A plain reboot from RISC-V also comes up on ARM, but through the firmware's
+failed-boot guard, and the markers stay on the card until the next request.
