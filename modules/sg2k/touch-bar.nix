@@ -287,6 +287,8 @@ in
           ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="${baseNameOf cfg.backlight}", RUN+="${pkgs.coreutils}/bin/chgrp video /sys%p/brightness", RUN+="${pkgs.coreutils}/bin/chmod g+w /sys%p/brightness"
         '';
         security.polkit.extraConfig = ''
+          // The settings' services carry no session test: the camera's root service
+          // turns WiFi on as this user.
           polkit.addRule(function(action, subject) {
             if (subject.user != "badge" || action.id != "org.freedesktop.systemd1.manage-units") return;
             var unit = action.lookup("unit"), verb = action.lookup("verb");

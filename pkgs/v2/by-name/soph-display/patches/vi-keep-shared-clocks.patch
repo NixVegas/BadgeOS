@@ -1,0 +1,58 @@
+vi: keep the VIP clocks enabled after the last close
+
+The display runs on the VIP_SYS clocks without holding a reference to them:
+they stay on only because the kernel boots with clk_ignore_unused. vi_open()
+takes a reference on them on the first open, and the last close drops it again,
+which brings the enable count back to zero and lets the clock framework gate
+them under the running display. Display MMIO then stalls the interconnect.
+
+Take the clocks once, on the first open, and keep them. They were already
+running, so leaving them enabled changes nothing for the hardware.
+
+---
+--- a/interdrv/vi/chip/cv181x/vi.c
++++ b/interdrv/vi/chip/cv181x/vi.c
+@@ -5036,15 +5036,12 @@
+ 
+ static void _vi_release_op(struct cvi_vi_dev *vdev)
+ {
+-#ifndef FPGA_PORTING
+-	u8 i = 0;
+-
+-	_vi_clk_ctrl(vdev, false);
+-
+-	for (i = 0; i < gViCtx->total_dev_num; i++) {
+-		vi_mac_clk_ctrl(vdev, i, false);
+-	}
+-#endif
++	/*
++	 * The VIP_SYS clocks are shared with the display, which runs on them
++	 * without holding a reference of its own. Dropping ours here would let
++	 * the clock framework gate them under the running display, so the
++	 * clocks taken on the first open stay enabled.
++	 */
+ }
+ 
+ static int _vi_create_proc(struct cvi_vi_dev *vdev)
+@@ -6164,6 +6161,9 @@
+ 	return ret;
+ }
+ 
++/* Set once the first open has enabled the clocks; see _vi_release_op(). */
++static bool vi_clk_held;
++
+ int vi_open(struct inode *inode, struct file *file)
+ {
+ 	int ret = 0;
+@@ -6174,7 +6174,10 @@
+ 
+ 	if (!atomic_read(&dev_open_cnt)) {
+ #ifndef FPGA_PORTING
+-		_vi_clk_ctrl(vdev, true);
++		if (!vi_clk_held) {
++			_vi_clk_ctrl(vdev, true);
++			vi_clk_held = true;
++		}
+ #endif
+ 		vi_init();
+ 

@@ -133,6 +133,21 @@ Doom and Quake hide the bar while they run, so quit from the game's own menu. Ot
 get a Close button, and the ones that take text a Keyboard button for the on-screen
 keyboard. Apps take longer to open on the RISC-V core.
 
+### Camera and QR codes
+
+Enable the GC4653 camera with `hardware.sg2k.camera.enable = true`, and Scan QR appears
+under Tools. It shows a live preview and reads QR codes without saving pictures. A WiFi
+code offers to join its network; scanning alone doesn't join anything. The camera
+reserves 64 MiB of contiguous memory and needs the panel's display stack. For the panel
+with the camera:
+
+```nix
+hardware.sg2k = {
+  dsiPanel.enable = true;
+  camera.enable = true;
+};
+```
+
 ### Other boards
 
 If your board is close to one of these but not quite the same, everything a board file

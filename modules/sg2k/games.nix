@@ -248,7 +248,7 @@ in
       };
     };
 
-    # The bar waits for the first picture.
+    # The bar waits for the first picture, as it does for the camera.
     systemd.services."badge-coda-cube@" = lib.mkIf (touch && cfg.cube) {
       overrideStrategy = "asDropin";
       serviceConfig = {

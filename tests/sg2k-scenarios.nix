@@ -26,6 +26,7 @@ let
   nano.hardware.sg2k.board = lib.mkForce "licheerv-nano";
   panel.hardware.sg2k = {
     dsiPanel.enable = true;
+    camera.enable = true;
   };
   noBar.badge.graphics.touchBar.enable = false;
   radios.hardware.sg2k.wifi = {
@@ -55,13 +56,14 @@ in
     ++ lib.optional (!c.hardware.sg2k.memory.stripModuleSymbols) "the panel keeps its module symbols"
     ++ lib.optional (
       lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps)
-      != "bluetooth-devices cube demo doom info quake terminal wifi-join"
+      != "bluetooth-devices camera cube demo doom info quake terminal wifi-join"
     ) "full menu differs"
     ++ lib.optional (
       !lib.all (a: a.system || c.systemd.user.services ? ${lib.removeSuffix ".service" a.unit}) (
         builtins.attrValues c.badge.graphics.touchBar.apps
       )
     ) "an app has no unit"
+    ++ lib.optional (!(c.systemd.services ? "badge-camera@")) "camera has no unit"
   );
   sg2k-panel-no-bar = scenario "sg2k-panel-no-bar" [ nano panel noBar ] (
     c:
@@ -77,11 +79,16 @@ in
     lib.optional (
       c.hardware.sg2k.dsiPanel.enable
       || c.badge.graphics.touchBar.enable
+      || c.hardware.sg2k.camera.enable
       || c.hardware.sg2k.memory.stripModuleSymbols
     ) "a panel area is enabled on the Badge"
     ++ lib.optional (c.systemd.services ? st7701-panel-init) "the Badge starts the panel"
     ++ lib.optional (c.badge.graphics.outputName != "HDMI-A-1") "the Badge lost HDMI"
   );
+  sg2k-camera-needs-panel = scenario "sg2k-camera-needs-panel" [
+    nano
+    { hardware.sg2k.camera.enable = true; }
+  ] (refused "camera.enable needs the panel");
   sg2k-software-core = scenario "sg2k-software-core" [ nano software ] (
     c:
     map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)

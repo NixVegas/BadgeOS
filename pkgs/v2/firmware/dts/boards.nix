@@ -40,6 +40,7 @@
       "sg200x-vip.dtsi"
       "soph-rotation.dtsi"
       "licheerv-nano-codec.dtsi"
+      "licheerv-nano-camera.dtsi"
     ];
   };
 }

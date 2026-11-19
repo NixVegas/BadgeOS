@@ -1,0 +1,26 @@
+vi: skip the raw-dump teardown when streaming never started
+
+When enabling a VI channel fails, the release that follows runs
+vi_stop_streaming(), and that tears down the raw-dump queue. The queue is set
+up only at the end of vi_start_streaming(), so the teardown walks a zeroed
+list head and the kernel oopses in isp_buf_remove() with interrupts off.
+
+Return early when the queue was never set up.
+
+---
+--- a/interdrv/vi/chip/cv181x/vi_raw_dump.c
++++ b/interdrv/vi/chip/cv181x/vi_raw_dump.c
+@@ -450,6 +450,13 @@
+ }
+ void isp_raw_dump_deinit(void)
+ {
++	/*
++	 * vi_stop_streaming() also runs when streaming never started, as on the
++	 * release after a failed channel enable, and the queue is only set up at
++	 * the end of vi_start_streaming().
++	 */
++	if (!g_raw_dump_work.raw_dump_vb_q.rdy_queue.next)
++		return;
+ 	raw_dump_wq_handler(&g_raw_dump_work.worker);
+ 	cancel_work_sync(&g_raw_dump_work.worker);
+ }

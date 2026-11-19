@@ -24,6 +24,7 @@ in
             lib.optional (!cfg.wifi.enable) "licheerv-nano-no-wifi.dtsi"
             ++ lib.optional (!cfg.ethernet.enable) "licheerv-nano-no-ethernet.dtsi"
             ++ lib.optional cfg.dsiPanel.enable "licheerv-nano-dsi-panel.dtsi"
+            ++ lib.optional cfg.camera.enable "licheerv-nano-camera.dtsi"
             ++ lib.optional (cfg.display.rotation != 0) "soph-rotation.dtsi"
             ++ lib.optional (
               cfg.dsiPanel.enable && config.badge.graphics.enable && config.badge.graphics.cube

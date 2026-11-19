@@ -1,13 +1,15 @@
 # The Sophgo userspace middleware (cvi_mpi): the modules the display and H.264 path need.
+# withCamera adds the capture path (VI, ISP and its 3A libraries).
 {
   lib,
   stdenv,
   fetchFromGitHub,
   soph-ion-uapi,
+  withCamera ? false,
 }:
 
 stdenv.mkDerivation (finalAttrs: {
-  pname = "soph-mpi";
+  pname = "soph-mpi" + lib.optionalString withCamera "-camera";
   version = "0-unstable-2025-693a72a1";
 
   src = fetchFromGitHub {
@@ -19,7 +21,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   # Maps ION memory through /dev/soph-ion instead of /dev/mem, which a STRICT_DEVMEM
   # kernel refuses for RAM.
-  patches = [ ./devmem-soph-ion.patch ];
+  patches = [ ./devmem-soph-ion.patch ] ++ lib.optional withCamera ./isp-shared-buffer-heap.patch;
 
   strictDeps = true;
   buildInputs = [ soph-ion-uapi ];
@@ -30,6 +32,12 @@ stdenv.mkDerivation (finalAttrs: {
     "vdec"
     "mipi_tx"
     "rgn"
+  ]
+  ++ lib.optionals withCamera [
+    "bin"
+    "vi"
+    "vpss"
+    "isp"
   ];
 
   postPatch = ''
@@ -47,12 +55,37 @@ stdenv.mkDerivation (finalAttrs: {
     # mipi_tx's fab_lowpower_off parameter.
     substituteInPlace modules/sys/src/cvi_sys.c \
       --replace-fail '	pthread_once(&lp_off_once, _sys_low_power_off);' ""
+  ''
+  + lib.optionalString withCamera ''
+    # Keep the ISP and 3A libraries without the tuning daemons and replay tools.
+    sed -i -e '/generate_toolJson.sh/d' -e '/cd isp-daemon2;/d' \
+      -e '/raw_replay; \$(MAKE) all/d' -e '/raw_dump; \$(MAKE) all/d' modules/isp/cv181x/Makefile
+    if grep -q 'generate_toolJson\|isp-daemon2; \$(MAKE) -j4\|raw_replay; \$(MAKE) all\|raw_dump; \$(MAKE) all' \
+      modules/isp/cv181x/Makefile; then
+      exit 1
+    fi
+  ''
+  + lib.optionalString (withCamera && stdenv.hostPlatform.isAarch64) ''
+    # Alias vendor object names to the selected toolchain triple.
+    find modules -name '*.aarch64-linux-gnu.*.o' -print0 | while IFS= read -r -d "" o; do
+      ln -s "$(basename "$o")" "''${o/.aarch64-linux-gnu./.${stdenv.hostPlatform.config}.}"
+    done
+    ln -s aarch64-linux-gnu modules/bin/prebuilt/${stdenv.hostPlatform.config}
+
+    # The prebuilt objects need GCC outline atomics after the shared-library inputs.
+    cat > ld-libgcc <<EOF
+    #!${stdenv.shell}
+    exec ${stdenv.cc.targetPrefix}ld "\$@" $($CC -print-libgcc-file-name)
+    EOF
+    chmod +x ld-libgcc
+    substituteInPlace mpi_param.mk --replace-fail 'LD := $(CROSS_COMPILE)ld' "LD := $PWD/ld-libgcc"
   '';
 
   dontConfigure = true;
 
   # GCC-9-era code built with -Werror.
-  env.NIX_CFLAGS_COMPILE = "-Wno-error";
+  # The ISP diagnostics use non-literal format strings.
+  env.NIX_CFLAGS_COMPILE = "-Wno-error" + lib.optionalString withCamera " -Wno-format-security";
 
   buildPhase = ''
     runHook preBuild

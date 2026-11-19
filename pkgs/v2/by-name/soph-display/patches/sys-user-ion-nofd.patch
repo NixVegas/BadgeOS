@@ -1,0 +1,166 @@
+sys: give userspace ION allocations an owner
+
+SYS_ION_ALLOC, which the middleware's CVI_SYS_IonAlloc() uses for the ISP's
+buffers, allocates through cvi_ion_alloc(). The ION shim implements only the
+no-fd allocator, so every userspace allocation fails, and the middleware then
+dereferences the NULL buffer it got back.
+
+Allocate through the no-fd allocator instead, and record which file asked:
+only that file may free an allocation, and whatever it still holds is freed
+when it is released, so a camera process that dies does not leak CMA.
+Userspace maps these buffers by physical address through /dev/soph-ion and
+never used the dma-buf fd, which is now -1.
+
+---
+--- a/interdrv/sys/common/sys.c
++++ b/interdrv/sys/common/sys.c
+@@ -307,7 +307,74 @@
+ }
+ EXPORT_SYMBOL_GPL(sys_ion_free_nofd);
+ 
+-static CVI_S32 sys_ion_free_user(struct cvi_sys_device *ndev, unsigned long arg)
++/*
++ * Allocations userspace makes through SYS_ION_ALLOC. They come from the no-fd
++ * allocator, as the ION shim has no fd-based one, and belong to the file that
++ * asked for them: only that file frees them, and whatever it still holds is
++ * freed when it is released, so a process that dies does not leak CMA.
++ */
++#define SYS_USER_ION_MAX 64
++static struct {
++	CVI_U64 phys;
++	struct file *owner;
++} sys_user_ion[SYS_USER_ION_MAX];
++static DEFINE_SPINLOCK(sys_user_ion_lock);
++
++static int sys_user_ion_add(CVI_U64 phys, struct file *owner)
++{
++	int i, ret = -ENOMEM;
++
++	spin_lock(&sys_user_ion_lock);
++	for (i = 0; i < SYS_USER_ION_MAX; i++) {
++		if (!sys_user_ion[i].owner) {
++			sys_user_ion[i].phys = phys;
++			sys_user_ion[i].owner = owner;
++			ret = 0;
++			break;
++		}
++	}
++	spin_unlock(&sys_user_ion_lock);
++	return ret;
++}
++
++/* Forgets the allocation if owner holds it; true if it did. */
++static bool sys_user_ion_remove(CVI_U64 phys, struct file *owner)
++{
++	bool found = false;
++	int i;
++
++	spin_lock(&sys_user_ion_lock);
++	for (i = 0; i < SYS_USER_ION_MAX; i++) {
++		if (sys_user_ion[i].owner == owner && sys_user_ion[i].phys == phys) {
++			sys_user_ion[i].owner = NULL;
++			found = true;
++			break;
++		}
++	}
++	spin_unlock(&sys_user_ion_lock);
++	return found;
++}
++
++/* Forgets and returns one of owner's allocations, 0 when it holds none. */
++static CVI_U64 sys_user_ion_take(struct file *owner)
++{
++	CVI_U64 phys = 0;
++	int i;
++
++	spin_lock(&sys_user_ion_lock);
++	for (i = 0; i < SYS_USER_ION_MAX; i++) {
++		if (sys_user_ion[i].owner == owner) {
++			sys_user_ion[i].owner = NULL;
++			phys = sys_user_ion[i].phys;
++			break;
++		}
++	}
++	spin_unlock(&sys_user_ion_lock);
++	return phys;
++}
++
++static CVI_S32 sys_ion_free_user(struct cvi_sys_device *ndev, struct file *filp,
++				 unsigned long arg)
+ {
+ 	CVI_S32 ret = 0;
+ 	struct sys_ion_data ioctl_arg;
+@@ -320,7 +387,9 @@
+ 		return ret;
+ 	}
+ 
+-	return _sys_ion_free(ioctl_arg.addr_p);
++	if (!sys_user_ion_remove(ioctl_arg.addr_p, filp))
++		return -EPERM;
++	return _sys_ion_free_nofd(ioctl_arg.addr_p);
+ }
+ 
+ CVI_S32 sys_ion_alloc(CVI_U64 *p_paddr, void **pp_vaddr, CVI_U8 *buf_name, CVI_U32 buf_len, bool is_cached)
+@@ -337,9 +406,10 @@
+ }
+ EXPORT_SYMBOL_GPL(sys_ion_alloc_nofd);
+ 
+-static CVI_S32 sys_ion_alloc_user(struct cvi_sys_device *ndev, unsigned long arg)
++static CVI_S32 sys_ion_alloc_user(struct cvi_sys_device *ndev, struct file *filp,
++				  unsigned long arg)
+ {
+-	CVI_S32 ret = 0, dma_fd = 0;
++	CVI_S32 ret = 0, dma_fd = -1;
+ 	CVI_U64 addr_p = 0;
+ 	void *addr_v = NULL;
+ 	struct sys_ion_data ioctl_arg;
+@@ -352,12 +422,16 @@
+ 		return ret;
+ 	}
+ 
+-	ret = _sys_ion_alloc(&dma_fd, &addr_p, &addr_v,
+-					ioctl_arg.size, ioctl_arg.cached, ioctl_arg.name);
++	ret = _sys_ion_alloc_nofd(&addr_p, &addr_v,
++				  ioctl_arg.size, ioctl_arg.cached, ioctl_arg.name);
+ 	if (ret < 0) {
+-		pr_err("_sys_ion_alloc failed\n");
++		pr_err("_sys_ion_alloc_nofd failed\n");
+ 		return ret;
+ 	}
++	if (sys_user_ion_add(addr_p, filp)) {
++		_sys_ion_free_nofd(addr_p);
++		return -ENOMEM;
++	}
+ 
+ 	ioctl_arg.addr_p = addr_p;
+ 	ioctl_arg.dmabuf_fd = dma_fd;
+@@ -771,10 +845,10 @@
+ 		break;
+ 
+ 	case SYS_ION_ALLOC:
+-		ret = sys_ion_alloc_user(ndev, arg);
++		ret = sys_ion_alloc_user(ndev, filp, arg);
+ 		break;
+ 	case SYS_ION_FREE:
+-		ret = sys_ion_free_user(ndev, arg);
++		ret = sys_ion_free_user(ndev, filp, arg);
+ 		break;
+ 	case SYS_CACHE_INVLD:
+ 		ret = sys_cache_op_userv(arg, enum_cache_op_invalid);
+@@ -832,7 +906,15 @@
+ static int cvi_sys_close(struct inode *inode, struct file *filp)
+ {
+ 	struct cvi_sys_device *ndev = filp->private_data;
+-	int cnt = 0;
++	int cnt = 0, left = 0;
++	CVI_U64 phys;
++
++	while ((phys = sys_user_ion_take(filp))) {
++		_sys_ion_free_nofd(phys);
++		left++;
++	}
++	if (left)
++		pr_info("cvi-sys: freed %d allocations a closed file left\n", left);
+ 
+ 	spin_lock(&ndev->close_lock);
+ 	cnt = --ndev->use_count;

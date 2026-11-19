@@ -31,6 +31,7 @@
     ./dsi-panel.nix
     ./graphics.nix
     ./touch-bar.nix
+    ./camera.nix
     ./games.nix
     ./desktop.nix
     ./video.nix

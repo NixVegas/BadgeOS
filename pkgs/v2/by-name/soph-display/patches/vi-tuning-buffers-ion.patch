@@ -1,0 +1,148 @@
+vi: allocate the buffers userspace maps from ION
+
+The ISP middleware maps the tuning configs and the FSWDR report by the physical
+address the driver hands it, through /dev/mem on the vendor kernel. Here those
+buffers come from kzalloc()/kmalloc(), and a STRICT_DEVMEM kernel refuses to
+map RAM through /dev/mem, so the map fails and the middleware writes through
+the NULL it gets back.
+
+Allocate them from ION instead, through the no-fd allocator the other VIP
+buffers use. Userspace maps ION memory through /dev/soph-ion, and the kernel
+and userspace then share one uncached mapping of it.
+
+---
+--- a/interdrv/vi/chip/cv181x/vip/vi_tun_ip_ctrl.c
++++ b/interdrv/vi/chip/cv181x/vip/vi_tun_ip_ctrl.c
+@@ -1,5 +1,6 @@
+ #include <linux/slab.h>
+ #include <vip/vi_drv.h>
++#include <sys.h>
+ 
+ #define BE_RUNTIME_TUN(_name) \
+ 	{\
+@@ -24,6 +25,18 @@
+ struct isp_tuning_cfg tuning_buf_addr;
+ struct cvi_vi_tuning_buffer_pool tuning_buf_pool[ISP_PRERAW_VIRT_MAX];
+ 
++/*
++ * The middleware maps the tuning configs by physical address. Kernel memory cannot
++ * be mapped that way without /dev/mem, so the pools come from ION, which userspace
++ * maps through /dev/soph-ion; both sides then share one uncached mapping.
++ */
++static CVI_U64 tuning_pool_phys[ISP_PRERAW_VIRT_MAX];
++
++static CVI_U64 tuning_phys(int i, void *p)
++{
++	return tuning_pool_phys[i] + ((u8 *)p - (u8 *)tuning_buf_pool[i].memory);
++}
++
+ struct vi_clut_idx {
+ 	u32		clut_tbl_idx[TUNING_NODE_NUM];
+ 	spinlock_t	clut_idx_lock;
+@@ -263,9 +276,13 @@
+ 		if (!ctx->isp_pipe_enable[i] || tuning_buf_pool[i].total_size != 0)
+ 			continue;
+ 
+-		tuning_buf_pool[i].memory = kzalloc(total_size, GFP_KERNEL | __GFP_RETRY_MAYFAIL);
+-		if (!tuning_buf_pool[i].memory) {
++		if (sys_ion_alloc_nofd(&tuning_pool_phys[i], (void **)&tuning_buf_pool[i].memory,
++				       "vi_tuning", total_size, false)) {
+ 			vi_pr(VI_ERR, "tuning_buf pool alloc ion size(%u) fail\n", total_size);
++			tuning_buf_pool[i].memory = NULL;
++			tuning_pool_phys[i] = 0;
++		} else {
++			memset(tuning_buf_pool[i].memory, 0, total_size);
+ 		}
+ 		tuning_buf_pool[i].total_size = total_size;
+ 		tuning_buf_pool[i].is_allocated = 0;
+@@ -314,8 +331,11 @@
+ 		if (!ctx->isp_pipe_enable[i])
+ 			continue;
+ 
+-		if (tuning_buf_pool[i].total_size)
+-			kfree(tuning_buf_pool[i].memory);
++		if (tuning_buf_pool[i].total_size) {
++			if (tuning_pool_phys[i])
++				sys_ion_free_nofd(tuning_pool_phys[i]);
++			tuning_pool_phys[i] = 0;
++		}
+ 		else {
+ 			vi_pr(VI_ERR, "tuning_buf pool[%d] already destroyed\n", i);
+ 			continue;
+@@ -343,17 +363,17 @@
+ 		vi_tuning_mempool_alloc(i, &post_cfg[i], &be_cfg[i], &fe_cfg[i]);
+ 
+ 		if (tuning_buf_addr.post_addr[i] == 0) {
+-			tuning_buf_addr.post_addr[i] = virt_to_phys(post_cfg[i]);
++			tuning_buf_addr.post_addr[i] = tuning_phys(i, post_cfg[i]);
+ 			tuning_buf_addr.post_vir[i] = post_cfg[i];
+ 		}
+ 
+ 		if (tuning_buf_addr.be_addr[i] == 0) {
+-			tuning_buf_addr.be_addr[i] = virt_to_phys(be_cfg[i]);
++			tuning_buf_addr.be_addr[i] = tuning_phys(i, be_cfg[i]);
+ 			tuning_buf_addr.be_vir[i] = be_cfg[i];
+ 		}
+ 
+ 		if (tuning_buf_addr.fe_addr[i] == 0) {
+-			tuning_buf_addr.fe_addr[i] = virt_to_phys(fe_cfg[i]);
++			tuning_buf_addr.fe_addr[i] = tuning_phys(i, fe_cfg[i]);
+ 			tuning_buf_addr.fe_vir[i] = fe_cfg[i];
+ 		}
+ 
+--- a/interdrv/vi/chip/cv181x/vi.c
++++ b/interdrv/vi/chip/cv181x/vi.c
+@@ -19,6 +19,9 @@
+ #include <sys.h>
+ #include <cmdq.h>
+ 
++/* Physical addresses of the FSWDR report buffers, which come from ION. */
++static CVI_U64 fswdr_rpt_phys[ISP_PRERAW_VIRT_MAX];
++
+ /*******************************************************
+  *  MACRO defines
+  ******************************************************/
+@@ -3275,7 +3278,8 @@
+ 	spin_unlock_irqrestore(&raw_num_lock, flags);
+ 
+ 	for (i = 0; i < ISP_PRERAW_VIRT_MAX; i++) {
+-		kfree(isp_bufpool[i].fswdr_rpt);
++		if (isp_bufpool[i].fswdr_rpt)
++			sys_ion_free_nofd(fswdr_rpt_phys[i]);
+ 		isp_bufpool[i].fswdr_rpt = 0;
+ 	}
+ 
+@@ -5825,9 +5829,12 @@
+ 		}
+ 
+ 		isp_mem->size = sizeof(struct cvi_vip_isp_fswdr_report);
++		/* From ION, which the middleware can map by physical address. */
+ 		if (isp_bufpool[isp_mem->raw_num].fswdr_rpt == NULL) {
+-			isp_bufpool[isp_mem->raw_num].fswdr_rpt = kmalloc(
+-				isp_mem->size, GFP_DMA | GFP_KERNEL);
++			if (sys_ion_alloc_nofd(&fswdr_rpt_phys[isp_mem->raw_num],
++					       (void **)&isp_bufpool[isp_mem->raw_num].fswdr_rpt,
++					       "vi_fswdr_rpt", isp_mem->size, false))
++				isp_bufpool[isp_mem->raw_num].fswdr_rpt = NULL;
+ 			if (isp_bufpool[isp_mem->raw_num].fswdr_rpt == NULL) {
+ 				vi_pr(VI_ERR, "isp_bufpool[%d].fswdr_rpt alloc size(%d) fail\n",
+ 					isp_mem->raw_num, isp_mem->size);
+@@ -5836,7 +5843,7 @@
+ 			}
+ 		}
+ 		isp_mem->vir_addr = isp_bufpool[isp_mem->raw_num].fswdr_rpt;
+-		isp_mem->phy_addr = virt_to_phys(isp_bufpool[isp_mem->raw_num].fswdr_rpt);
++		isp_mem->phy_addr = fswdr_rpt_phys[isp_mem->raw_num];
+ 
+ 		if (copy_to_user(p->ptr, isp_mem, sizeof(struct cvi_vip_memblock)) != 0) {
+ 			vfree(isp_mem);
+@@ -8742,7 +8749,8 @@
+ 
+ 	for (i = 0; i < ISP_PRERAW_VIRT_MAX; i++) {
+ 		sync_task_exit(i);
+-		kfree(isp_bufpool[i].fswdr_rpt);
++		if (isp_bufpool[i].fswdr_rpt)
++			sys_ion_free_nofd(fswdr_rpt_phys[i]);
+ 		isp_bufpool[i].fswdr_rpt = 0;
+ 	}
+ 	vi_tuning_mempool_destroy(&vdev->ctx);

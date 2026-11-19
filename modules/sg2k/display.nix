@@ -9,6 +9,7 @@
 let
   soph-display = pkgs.soph-display.override {
     kernel = config.boot.kernelPackages.kernel;
+    withCamera = config.hardware.sg2k.camera.enable;
   };
 
   soph-vpu-firmware = pkgs.soph-vpu-firmware;

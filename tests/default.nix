@@ -51,6 +51,7 @@ else
     boot-dir = pkgs.nix-badge-boot-dir.passthru.tests.boot-dir;
     badge-touch-bar = pkgs.badge-touch-bar;
     panel-touch = pkgsPatched.panel-touch-tests;
+    camera-qr = pkgs.badge-camera.passthru.tests.qr;
     core-reboot = pkgs.nix-badge-core-reboot.passthru.tests.reboot;
     dtb-licheerv-nano = import ./dtb-licheerv-nano.nix { inherit pkgs; };
     board-licheerv-nano-riscv = import ./board-licheerv-nano.nix {

@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * The camera on the panel carrier's MIPI CSI connector: a
+ * GalaxyCore GC4653 on CSI0 (clock lane on pad 4, data on pads 3 and 2), on I2C4 at
+ * 0x29 beside the touchscreen, its master clock CAM_MCLK1 on the MIPI_RX0N pad and its
+ * reset on PWR_GPIO1. From the vendor's sg2002_licheervnano_sd.dts, its board init and
+ * its sensor_cfg.ini. Needs the VIP stack of sg200x-vip.dtsi, which the panel brings.
+ *
+ * The vendor cif (MIPI receiver) and vi (ISP) drivers bind these nodes; the sensor is
+ * programmed from user space through i2c-dev. The clocks are the mainline
+ * sophgo,sg2000-clk equivalents of the vendor's CV181X_CLK_* indices. The CSI PHY
+ * resets are bits 70-73 of the reset controller, which mainline does not name. The
+ * interrupts are the vendor's PLIC sources less the 16 SOC_PERIPHERAL_IRQ adds.
+ */
+
+/ {
+	soc {
+		cvi_cif: cif {
+			compatible = "cvitek,cif";
+			reg = <0x0a0c2000 0x2000>, <0x0a0d0000 0x1000>, <0x0a0c4000 0x2000>,
+			      <0x0a0c6000 0x2000>, <0x03001c30 0x30>;
+			reg-names = "csi_mac0", "csi_wrap0", "csi_mac1", "csi_mac2", "pad_ctrl";
+			resets = <&rst 70>, <&rst 72>, <&rst 71>, <&rst 73>;
+			reset-names = "phy0", "phy1", "phy-apb0", "phy-apb1";
+			clocks = <&clk CLK_CAM0>, <&clk CLK_CAM1>, <&clk CLK_SRC_VIP_SYS_2>,
+				 <&clk CLK_MIPIMPLL>, <&clk CLK_DISPPLL>, <&clk CLK_FPLL>;
+			clock-names = "clk_cam0", "clk_cam1", "clk_sys_2",
+				      "clk_mipimpll", "clk_disppll", "clk_fpll";
+			interrupts = <SOC_PERIPHERAL_IRQ(10) IRQ_TYPE_LEVEL_HIGH>,
+				     <SOC_PERIPHERAL_IRQ(11) IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "csi0", "csi1";
+			pinctrl-0 = <&cam_mclk1_cfg>;
+			pinctrl-names = "default";
+		};
+
+		cvi_vi: vi {
+			compatible = "cvitek,vi";
+			reg = <0x0a000000 0x80000>;
+			clocks = <&clk CLK_SRC_VIP_SYS_0>, <&clk CLK_SRC_VIP_SYS_1>,
+				 <&clk CLK_SRC_VIP_SYS_2>, <&clk CLK_SRC_VIP_SYS_3>,
+				 <&clk CLK_AXI_VIP>, <&clk CLK_CSI_BE_VIP>,
+				 <&clk CLK_RAW_VIP>, <&clk CLK_ISP_TOP_VIP>,
+				 <&clk CLK_CSI_MAC0_VIP>, <&clk CLK_CSI_MAC1_VIP>,
+				 <&clk CLK_CSI_MAC2_VIP>;
+			clock-names = "clk_sys_0", "clk_sys_1", "clk_sys_2", "clk_sys_3",
+				      "clk_axi", "clk_csi_be", "clk_raw", "clk_isp_top",
+				      "clk_csi_mac0", "clk_csi_mac1", "clk_csi_mac2";
+			clock-freq-vip-sys1 = <300000000>;
+			interrupts = <SOC_PERIPHERAL_IRQ(8) IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "isp";
+		};
+	};
+};
+
+&pinctrl {
+	cam_mclk1_cfg: cam-mclk1-cfg {
+		cam-mclk1-pins {
+			pinmux = <PINMUX(PIN_MIPIRX0N, 5)>;
+			power-source = <1800>;
+		};
+	};
+
+	cam_reset_cfg: cam-reset-cfg {
+		cam-reset-pins {
+			pinmux = <PINMUX(PIN_PWR_GPIO1, 0)>;
+			power-source = <1800>;
+		};
+	};
+};
+
+/*
+ * The forward-ported cif driver cannot look up its vendor snsr-reset GPIO (the
+ * compat layer reports none), so the sensor is held out of reset here instead.
+ */
+&rtcsys_gpio {
+	pinctrl-0 = <&cam_reset_cfg>;
+	pinctrl-names = "default";
+};
+
+&porte {
+	cam-reset-hog {
+		gpio-hog;
+		gpios = <1 GPIO_ACTIVE_LOW>;
+		output-low;
+		line-name = "cam-reset";
+	};
+};
