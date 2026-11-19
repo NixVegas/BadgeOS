@@ -51,7 +51,9 @@
  *   the full width itself. It takes XRGB8888 and ARGB8888 and blends on
  *   per-pixel alpha, see soph_gop_alpha_fill().
  *
- * With rotation=90/270, only the native mode is offered, with swapped axes.
+ * With rotation=90/270, the native mode is offered with swapped axes, and on
+ * a panel the same line at half the active size, which the CPU doubles in
+ * front of the rotation.
  * The LDC rotates packed RGB bytes as Y400 into alternating driver-owned
  * buffers. DISP reads those bytes as planar RGB; the DSI timing stays fixed.
  * No vendor DWA module or color conversion is involved.
@@ -319,7 +321,8 @@ struct soph_drm {
 	const struct soph_profile *profile;
 
 	/* The panel's own mode, which the video layer scans 1:1, and the
-	 * half-size mode the GOP's 2x scaler doubles; see soph_read_mode(). */
+	 * half-size mode, doubled by the GOP's 2x scaler on HDMI and by
+	 * soph_rot_double() on a rotated panel; see soph_read_mode(). */
 	struct drm_display_mode native_mode, gop_mode;
 	struct soph_rot *rot;
 	bool has_gop;
@@ -797,7 +800,7 @@ static void soph_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct sclr_disp_cfg *cfg;
 	struct soph_layer layer;
 
-	sd->video_layer = soph_mode_is_native(sd, &cstate->mode);
+	sd->video_layer = sd->rot || soph_mode_is_native(sd, &cstate->mode);
 
 	if (nomodeset)
 		goto out;
@@ -1091,7 +1094,7 @@ static void soph_pipe_update(struct drm_simple_display_pipe *pipe,
 	 * before they enable the CRTC (drm_atomic_helper_commit_tail), so this
 	 * runs ahead of the enable that switches paths.
 	 */
-	video_layer = soph_mode_is_native(sd, &crtc->state->mode);
+	video_layer = sd->rot || soph_mode_is_native(sd, &crtc->state->mode);
 
 	if (fb && !nomodeset) {
 		if (sd->rot && soph_rot_run(sd->rot, state))
@@ -1180,8 +1183,11 @@ static int soph_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!fb)
 		return 0;
 	format = fb->format->format;
-	if (sd->rot)
+	if (sd->rot) {
+		if (fb->width != mode->hdisplay || fb->height != mode->vdisplay)
+			return -EINVAL;
 		return soph_rot_check(sd->rot, plane_state);
+	}
 
 	if (soph_mode_is_native(sd, mode)) {
 		if (format == DRM_FORMAT_RGB888 &&
@@ -1575,6 +1581,15 @@ static int soph_read_mode(struct soph_drm *sd)
 	}
 	if (!sd->has_gop)
 		goto done;
+	if (rotation) {
+		/* The same rotated line, half the active size. */
+		sd->gop_mode = sd->native_mode;
+		sd->gop_mode.hdisplay /= 2;
+		sd->gop_mode.vdisplay /= 2;
+		sd->gop_mode.type &= ~DRM_MODE_TYPE_PREFERRED;
+		drm_mode_set_name(&sd->gop_mode);
+		goto done;
+	}
 
 	/*
 	 * The GOP mode is the panel halved, and the overlay's 2x scaler puts
@@ -1672,7 +1687,10 @@ static int soph_drm_probe(struct platform_device *pdev)
 	drm = &sd->drm;
 	platform_set_drvdata(pdev, sd);
 	sd->profile = device_get_match_data(&pdev->dev) ?: &soph_hdmi_profile;
-	sd->has_gop = sd->profile->gop_mode && !rotation;
+	/* The rotated panel has a half-size mode too, doubled by the CPU in
+	 * front of the rotation in place of by the GOP. */
+	sd->has_gop = (sd->profile->gop_mode && !rotation) ||
+		      (rotation && !sd->profile->bridge);
 
 	/* GEM DMA buffers come out of CMA, same pool the VIP video buffers and
 	 * gmac0's descriptor rings share. A 1280x720 RGB888 buffer is 2.7 MB
