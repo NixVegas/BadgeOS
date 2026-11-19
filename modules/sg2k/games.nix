@@ -126,6 +126,11 @@ let
 in
 {
   options.badge.graphics = {
+    cube = lib.mkEnableOption "the CODA980 cube and its launch service" // {
+      default = pkgs.stdenv.hostPlatform.isAarch64 || touch;
+      defaultText = lib.literalExpression "pkgs.stdenv.hostPlatform.isAarch64 || config.badge.graphics.touchBar.enable";
+    };
+
     autostartQuake = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -233,6 +238,23 @@ in
         label = "Nix Fixes This";
         group = "Demos";
         command = lib.getExe badge-demo;
+      };
+      cube = lib.mkIf cfg.cube {
+        label = "Cube";
+        group = "Demos";
+        unit = "badge-coda-cube@badge.service";
+        system = true;
+        appId = "coda-cube";
+      };
+    };
+
+    # The bar waits for the first picture.
+    systemd.services."badge-coda-cube@" = lib.mkIf (touch && cfg.cube) {
+      overrideStrategy = "asDropin";
+      serviceConfig = {
+        Type = "notify";
+        TimeoutStartSec = cfg.touchBar.limits.start;
+        TimeoutStopSec = cfg.touchBar.limits.stop;
       };
     };
 

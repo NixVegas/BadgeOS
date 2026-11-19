@@ -22,4 +22,16 @@ fi
 export WAYLAND_DISPLAY SDL_VIDEODRIVER=wayland
 # The demo: decoder frames scanned out as they are, with the anti-aliased
 # edges and the loop filter (the best picture), paced on the display.
-exec coda-cube --user "$user" --zero-copy --pipeline --aa --deblock
+set -- @args@
+# With sway's tools the picture is as large as USER's workspace. USER asks its
+# own compositor, and coda-cube checks the size that comes back.
+tools=@tools@
+if [ -n "$tools" ]; then
+	PATH=$PATH:$tools
+	sock=("$XDG_RUNTIME_DIR"/sway-ipc."$uid".*.sock)
+	as_user=(setpriv --reuid "$uid" --regid "$(id -g "$user")" --init-groups)
+	size=$("${as_user[@]}" swaymsg -s "${sock[-1]}" -rt get_workspaces |
+		"${as_user[@]}" jq -r '.[] | select(.focused) | .rect | "\(.width - .width % 16)x\(.height - .height % 16)"')
+	set -- "$@" --size "$size"
+fi
+exec coda-cube --user "$user" "$@"

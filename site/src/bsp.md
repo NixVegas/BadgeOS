@@ -115,7 +115,7 @@ which adjusts the touch coordinates and reserves 32 MiB of contiguous memory. Se
 ### Touch desktop
 
 On the panel's desktop a touch menu runs along the bottom of the screen. Its Home has
-Games (Doom and Quake), Demos (Nix Fixes This), Tools (a terminal and system
+Games (Doom and Quake), Demos (Nix Fixes This and the Cube), Tools (a terminal and system
 information) and Settings. Set `badge.graphics.touchBar.enable = false` for Sway without
 it.
 

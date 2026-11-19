@@ -57,6 +57,20 @@ let
         sg2k.display.rotation == 270
       ) "input type:touch calibration_matrix 0 -1 1 1 0 0"}
     ''}${cfg.extraConfig}'';
+
+  # In a native mode the cube is as large as the workspace, in a window above the
+  # bar or fullscreen without one. Zero-copy scanout is 1280x720 only.
+  cube = pkgs.badge-coda-cube.override (
+    lib.optionalAttrs (cfg.outputMode == "native") {
+      sway = config.programs.sway.package;
+      fitWorkspace = true;
+      args = lib.optional cfg.touchBar.enable "--windowed" ++ [
+        "--pipeline"
+        "--aa"
+        "--deblock"
+      ];
+    }
+  );
 in
 {
   options.badge.graphics = {
@@ -210,10 +224,10 @@ in
       pkgs.badge-graphics-check # SDL window framebuffer colour bars
       pkgs.badge-kms-check # soph_drm checks, with the compositor stopped
     ]
-    # coda-cube needs the A53.
-    ++ lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [ pkgs.badge-coda-cube ];
+    # coda-cube needs the A53, or the touch bar on RISC-V (badge.graphics.cube).
+    ++ lib.optionals cfg.cube [ cube ];
 
-    systemd.packages = lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [ pkgs.badge-coda-cube ];
+    systemd.packages = lib.optionals cfg.cube [ cube ];
 
     # foot has no built-in font; without one it exits at startup.
     fonts.packages = [ pkgs.dejavu_fonts ];

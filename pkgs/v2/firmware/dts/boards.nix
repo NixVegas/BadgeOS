@@ -39,6 +39,7 @@
       "licheerv-nano-dsi-panel.dtsi"
       "sg200x-vip.dtsi"
       "soph-rotation.dtsi"
+      "licheerv-nano-codec.dtsi"
     ];
   };
 }
