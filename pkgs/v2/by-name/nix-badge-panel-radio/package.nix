@@ -7,6 +7,7 @@
   systemd,
   kmod,
   networkmanager,
+  iproute2,
   bluez,
 }:
 let
@@ -28,6 +29,7 @@ symlinkJoin {
       systemd
       networkmanager
       coreutils
+      iproute2
     ])
     (command "nix-badge-panel-radio-bluetooth" ./bluetooth.sh [
       systemd

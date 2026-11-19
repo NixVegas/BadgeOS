@@ -12,6 +12,8 @@ let
   radioTools = pkgs.nix-badge-panel-radio;
 
   firmware = pkgs.aic8800-firmware.override { variants = [ cfg.wifi.firmware ]; };
+  # The on-demand consumer installs its qdisc before NetworkManager raises the link.
+  stableMac = pkgs.nix-badge-stable-mac.override { leaveDown = cfg.wifi.onDemand; };
 
   # The vendor SDHCI host for the wifi SDIO node (mmc@4320000); SD and eMMC stay on
   # mainline dwcmshc.
@@ -68,7 +70,7 @@ in
 
     # The driver randomises the MAC on every boot and has no option to turn that off.
     services.udev.extraRules = ''
-      SUBSYSTEM=="net", ACTION=="add", ENV{ID_NET_DRIVER}=="aicwf_sdio", RUN+="${lib.getExe pkgs.nix-badge-stable-mac} $name"
+      SUBSYSTEM=="net", ACTION=="add", ENV{ID_NET_DRIVER}=="aicwf_sdio", RUN+="${lib.getExe stableMac} $name"
     '';
 
     # The first consumer loads the drivers and they stay loaded: turning a radio off
