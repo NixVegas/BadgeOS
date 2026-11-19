@@ -3,8 +3,12 @@
 #
 # withPixman: also patch pixman. false keeps a closure on nixpkgs' pixman, so it
 # does not rebuild everything that links pixman.
+#
+# withAutologinUnlock: also patch greetd to unlock the memory of its automatic login,
+# for the panel's desktop.
 {
   withPixman ? true,
+  withAutologinUnlock ? false,
 }:
 final: prev:
 let
@@ -33,4 +37,7 @@ in
 }
 // prev.lib.optionalAttrs withPixman {
   pixman = addPatches prev.pixman (import ./pixman);
+}
+// prev.lib.optionalAttrs withAutologinUnlock {
+  greetd = addPatches prev.greetd (import ./greetd);
 }
