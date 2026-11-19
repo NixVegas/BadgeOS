@@ -37,6 +37,7 @@ static void app_error(struct state *s, const struct config *c, const char *reaso
 unsigned state_step(struct state *s, const struct config *c, struct event e, uint64_t now) {
     struct state before = *s;
     unsigned effects = 0;
+    if (s->reboot_busy && e.type != REBOOT_FAILED && e.type != TICK) return 0;
     switch (e.type) {
     case TAP_APP:
         if ((s->phase != HOME && s->phase != GROUP) || s->unit.active || s->window ||
@@ -89,6 +90,8 @@ unsigned state_step(struct state *s, const struct config *c, struct event e, uin
         else if ((s->phase == DISPLAY || s->phase == RADIOS) && !s->setting_busy)
             s->phase = SETTINGS;
         else if (s->phase == SETTING && !s->setting_busy) s->phase = RADIOS;
+        else if (s->phase == CORE_CONFIRM) { s->phase = CORE; s->deadline = 0; }
+        else if (s->phase == CORE) { s->phase = SETTINGS; s->error[0] = 0; }
         break;
     case TAP_SIZE:
         if (s->phase == DISPLAY && s->half_mode) s->phase = DISPLAY_SIZE;
@@ -101,6 +104,32 @@ unsigned state_step(struct state *s, const struct config *c, struct event e, uin
         break;
     case DISPLAY_DONE:
         s->display_busy = false;
+        break;
+    case TAP_CORE:
+        if (s->phase == SETTINGS && c->core_reboot) { s->phase = CORE; s->error[0] = 0; }
+        break;
+    case TAP_ARM: case TAP_RISCV:
+        if (s->phase == CORE && c->core_reboot && s->current_core != CORE_UNKNOWN) {
+            s->target_core = e.type == TAP_ARM ? CORE_ARM : CORE_RISCV;
+            s->phase = CORE_CONFIRM;
+            s->error[0] = 0;
+            s->deadline = now + 15000;
+        }
+        break;
+    case TAP_REBOOT:
+        if (s->phase == CORE_CONFIRM && c->core_reboot && now < s->deadline &&
+            (s->target_core == CORE_ARM || s->target_core == CORE_RISCV)) {
+            s->reboot_busy = true;
+            /* The worker owns the timeout, including time spent queued. */
+            s->deadline = 0;
+            effects = REBOOT_CORE;
+        }
+        break;
+    case REBOOT_FAILED:
+        s->reboot_busy = false;
+        s->phase = CORE;
+        s->deadline = 0;
+        snprintf(s->error, sizeof(s->error), "%s", e.error ? e.error : "Reboot failed");
         break;
     case TAP_DISPLAY:
         if (s->phase == SETTINGS) s->phase = DISPLAY;
@@ -192,6 +221,7 @@ unsigned state_step(struct state *s, const struct config *c, struct event e, uin
                 s->phase = s->return_phase;
                 s->error[0] = 0;
             }
+            else if (s->phase == CORE_CONFIRM) s->phase = CORE;
         }
         break;
     }
@@ -201,6 +231,7 @@ unsigned state_step(struct state *s, const struct config *c, struct event e, uin
 
 void state_restore(struct state *s, const struct config *c, const uint64_t *windows,
                    const struct unit_state *units) {
+    if (s->reboot_busy) return;
     int selected = -1;
     for (int i = 0; i < c->count; i++) {
         if (windows[i] || units[i].active) {

@@ -10,6 +10,7 @@ let
   graphics = config.badge.graphics;
   sg2k = config.hardware.sg2k;
   enabled = sg2k.enable && graphics.enable && cfg.enable;
+  coreMenu = sg2k.coreSelect.enable && sg2k.coreSelect.backend == "software";
   managedAudio = config.services.pipewire.enable && !config.services.pipewire.socketActivation;
   tools = pkgs.badge-panel-tools.override { withAudio = managedAudio; };
   wifi = sg2k.wifi.enable && sg2k.wifi.onDemand;
@@ -155,6 +156,7 @@ let
       font_size = fontSize;
       inherit font;
       inherit settings;
+      core_reboot = coreMenu;
       apps = lib.sort (a: b: rank a.id < rank b.id) (
         lib.mapAttrsToList (id: app: {
           inherit id;
@@ -294,6 +296,11 @@ in
             if (${builtins.toJSON systemApps}.indexOf(unit) >= 0 &&
                 (verb == "start" || verb == "stop") && subject.local && subject.active)
               return polkit.Result.YES;
+            ${lib.optionalString coreMenu ''
+              if (subject.local && subject.active && verb == "start" &&
+                  ["badge-core-reboot@arm.service", "badge-core-reboot@riscv.service"].indexOf(unit) >= 0)
+                return polkit.Result.YES;
+            ''}
           });
         '';
         badge.graphics.touchBar.apps = {

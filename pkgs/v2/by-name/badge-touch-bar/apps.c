@@ -73,6 +73,10 @@ bool config_load(struct config *c, const char *path) {
                 !strcmp(a->unit, c->apps[j].unit)) goto out;
     }
     c->count = (int)n;
+    if (json_object_object_get_ex(o, "core_reboot", &v)) {
+        if (!json_object_is_type(v, json_type_boolean)) goto out;
+        c->core_reboot = json_object_get_boolean(v);
+    }
     int home_count = 1 + c->group_count, group_sizes[3] = {0};
     for (int i = 0; i < c->count; i++) {
         if (c->apps[i].hidden) continue;

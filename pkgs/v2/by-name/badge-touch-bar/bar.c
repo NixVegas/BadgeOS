@@ -71,6 +71,22 @@ void bar_render(const struct state *s, const struct config *c, int width, bool r
         block(rows, s, "half", "Half", part, !s->display_busy, s->half_size, false);
         block(rows, s, s->error[0] ? "error" : "back", s->error[0] ? "!" : "Back",
               usable - part * 2, !s->display_busy, false, s->error[0]);
+    } else if (s->phase == CORE_CONFIRM) {
+        if (s->reboot_busy) block(rows, s, "disabled", "Rebooting…", usable, false, true, false);
+        else {
+            int part = usable / 4;
+            block(rows, s, "disabled", s->target_core == CORE_ARM ? "Reboot to ARM?" : "Reboot to RISC-V?",
+                  part * 2, false, false, false);
+            block(rows, s, "back", "Cancel", part, true, false, false);
+            block(rows, s, "reboot", "Reboot", usable - part * 3, true, false, false);
+        }
+    } else if (s->phase == CORE) {
+        int part = usable / 4;
+        block(rows, s, "error", s->error[0] ? "Failed · !" : s->current_core == CORE_ARM ? "Now: ARM" :
+              s->current_core == CORE_RISCV ? "Now: RISC-V" : "Unknown core", part, s->error[0], false, s->error[0]);
+        block(rows, s, "core-arm", "ARM", part, s->current_core != CORE_UNKNOWN, false, false);
+        block(rows, s, "core-riscv", "RISC-V", part, s->current_core != CORE_UNKNOWN, false, false);
+        block(rows, s, "back", "Back", usable - part * 3, true, false, false);
     } else if (s->phase == SETTING) {
         int i = s->setting;
         const struct setting_status *status = &s->setting_status[i];
@@ -86,9 +102,10 @@ void bar_render(const struct state *s, const struct config *c, int width, bool r
         block(rows, s, "back", "Back", usable - (n - 1) * part, !s->setting_busy, false, false);
     } else if (s->phase == SETTINGS) {
         bool display = c->backlight[0] || s->half_mode;
-        int n = 1 + display + (c->setting_count > 0), part = usable / n;
+        int n = 1 + display + (c->setting_count > 0) + c->core_reboot, part = usable / n;
         if (display) block(rows, s, "display", "Display", part, true, false, false);
         if (c->setting_count) block(rows, s, "radios", "Radios", part, true, false, false);
+        if (c->core_reboot) block(rows, s, "core", "Core", part, true, false, false);
         block(rows, s, "back", "Back", usable - (n - 1) * part, true, false, false);
     } else if (s->phase == RADIOS) {
         int n = c->setting_count + 1, part = usable / n;
@@ -155,6 +172,8 @@ bool bar_click(json_object *click, const struct state *s, const struct config *c
         {"display", TAP_DISPLAY}, {"radios", TAP_RADIOS}, {"enable", TAP_ENABLE}, {"disable", TAP_DISABLE},
         {"join", TAP_JOIN}, {"keyboard", TAP_KEYBOARD},
         {"size", TAP_SIZE}, {"full", TAP_FULL}, {"half", TAP_HALF},
+        {"core", TAP_CORE}, {"core-arm", TAP_ARM},
+        {"core-riscv", TAP_RISCV}, {"reboot", TAP_REBOOT}
     };
     for (size_t i = 0; i < sizeof(actions)/sizeof(actions[0]); i++)
         if (!strcmp(name, actions[i].name)) { e->type = actions[i].type; return true; }

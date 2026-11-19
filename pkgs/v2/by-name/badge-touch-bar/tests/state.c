@@ -128,6 +128,20 @@ static void display_size(void)
     assert(step(&s, TAP_BACK, 10) == 0 && s.phase == SETTINGS);
 }
 
+static void core_switch(void)
+{
+    struct state s;
+    config.core_reboot = true;
+    state_init(&s);
+    step(&s, TAP_SETTINGS, 0);
+    s.current_core = CORE_ARM;
+    assert(step(&s, TAP_CORE, 1) == 0 && s.phase == CORE);
+    assert(step(&s, TAP_RISCV, 2) == 0 && s.phase == CORE_CONFIRM && s.target_core == CORE_RISCV);
+    assert(step(&s, TAP_REBOOT, 3) == REBOOT_CORE);
+    assert(step(&s, TAP_REBOOT, 4) == 0);
+    assert(step(&s, REBOOT_FAILED, 5) == 0 && s.phase == CORE && !s.reboot_busy);
+}
+
 /* One app per letter, grouped by the letter. */
 static bool load(const char *groups)
 {
@@ -146,6 +160,7 @@ int main(void)
     settings();
     app_controls();
     display_size();
+    core_switch();
     /* Home holds three groups and Settings; a group holds three apps and Back. */
     assert(load("GGDDTTT") && !load("GDTX") && !load("GGGGD"));
     puts("state transitions passed");

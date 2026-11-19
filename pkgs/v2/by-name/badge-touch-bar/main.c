@@ -8,10 +8,11 @@
 #include <string.h>
 #include <sys/timerfd.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 
-enum job_type { NONE, IMPORT, OUTPUTS, TREE, UNIT, LAUNCH, STOP_UNIT, SETTING_READ, SETTING_START, SETTING_STOP, KEYBOARD_START, KEYBOARD_TOGGLE, DISPLAY_MODE, BAR_SIZE };
+enum job_type { NONE, IMPORT, OUTPUTS, TREE, UNIT, LAUNCH, STOP_UNIT, SETTING_READ, SETTING_START, SETTING_STOP, KEYBOARD_START, KEYBOARD_TOGGLE, DISPLAY_MODE, BAR_SIZE, CORE_REBOOT };
 struct runtime {
     struct config config;
     struct state state;
@@ -25,6 +26,7 @@ struct runtime {
     unsigned unit_mask, setting_mask;
     int start_setting, stop_setting, keyboard_start, keyboard_toggle;
     bool subscribed, syncing, want_import, want_outputs, want_tree;
+    enum core reboot_target;
 };
 static int signal_pipe[2];
 static volatile sig_atomic_t stopping;
@@ -44,6 +46,7 @@ static uint64_t now_ms(void) {
 
 static void effects(struct runtime *r, unsigned effect) {
     if (effect & (FULL_SIZE | HALF_SIZE)) r->display_mode = effect & HALF_SIZE ? 2 : 1;
+    if (effect & REBOOT_CORE) r->reboot_target = r->state.target_core;
     if (effect & TOGGLE_KEYBOARD) r->keyboard_start = r->state.app;
     if (effect & READ_SETTINGS) r->setting_mask = (1u << r->config.setting_count) - 1;
     if (effect & ENABLE_SETTING) r->start_setting = r->state.setting;
@@ -64,9 +67,14 @@ static void dispatch(struct runtime *r, struct event event) {
 
 static void disconnect_sway(struct runtime *r) {
     process_clear(&r->subscriber);
-    process_clear(&r->job);
-    r->job_type = NONE;
-    r->job_deadline = 0;
+    /* A reboot service outlives its systemctl client and the display connection. */
+    if (r->job_type != CORE_REBOOT) {
+        process_clear(&r->job);
+        r->job_type = NONE;
+        r->job_deadline = 0;
+    }
+    if (r->reboot_target != CORE_UNKNOWN)
+        dispatch(r, (struct event){.type=REBOOT_FAILED, .error="Display disconnected before reboot"});
     r->subscribed = false;
     r->syncing = true;
     r->want_import = r->want_outputs = r->want_tree = false;
@@ -75,6 +83,7 @@ static void disconnect_sway(struct runtime *r) {
     r->start_setting = r->stop_setting = r->keyboard_start = r->keyboard_toggle = -1;
     r->display_mode = 0;
     r->layout_pending = false;
+    r->reboot_target = CORE_UNKNOWN;
     r->state.keyboard_busy = false;
     r->state.setting_busy = r->state.display_busy = false;
     r->reconnect_at = now_ms() + 1000;
@@ -163,6 +172,12 @@ static void start_job(struct runtime *r) {
         args[0]="swaymsg"; args[1]="-q"; args[2]=command;
         r->layout_pending=false;
     }
+    else if (r->reboot_target != CORE_UNKNOWN) {
+        type=CORE_REBOOT;
+        args[0]="systemctl"; args[1]="--no-ask-password"; args[2]="start"; args[3]="--";
+        args[4]=r->reboot_target == CORE_ARM ? "badge-core-reboot@arm.service" : "badge-core-reboot@riscv.service";
+        r->reboot_target=CORE_UNKNOWN;
+    }
     else if (r->stop_app >= 0) { type=STOP_UNIT; app=r->stop_app; r->stop_app=-1; }
     else if (r->want_import) {
         type=IMPORT; r->want_import=false;
@@ -238,7 +253,8 @@ static void start_job(struct runtime *r) {
         if (type == DISPLAY_MODE) dispatch(r, (struct event){.type=DISPLAY_DONE});
         if (type == UNIT && r->syncing) disconnect_sway(r);
         else if (type != UNIT) dispatch(r, (struct event){
-            .type=(type == KEYBOARD_START || type == KEYBOARD_TOGGLE) ? KEYBOARD_DONE :
+            .type=type == CORE_REBOOT ? REBOOT_FAILED :
+                  (type == KEYBOARD_START || type == KEYBOARD_TOGGLE) ? KEYBOARD_DONE :
                   (type == SETTING_START || type == SETTING_STOP || type == SETTING_READ) ? SETTING_FAILED : OP_FAILED,
             .app=app, .error="Could not start control command"});
         if (type == UNIT) r->unit_poll_at = now_ms() + 2000;
@@ -293,7 +309,10 @@ static void finish_job(struct runtime *r, bool timeout) {
         dispatch(r, (struct event){.type=DISPLAY_DONE});
         r->want_outputs=true;
     }
-    if (type == KEYBOARD_START || type == KEYBOARD_TOGGLE) {
+    if (type == CORE_REBOOT) {
+        if (!ok) dispatch(r, (struct event){.type=REBOOT_FAILED,
+            .error=timeout ? "Reboot command timed out" : "Reboot refused; check system log"});
+    } else if (type == KEYBOARD_START || type == KEYBOARD_TOGGLE) {
         if (ok && type == KEYBOARD_START) r->keyboard_toggle=app;
         else dispatch(r, (struct event){.type=KEYBOARD_DONE, .app=app,
             .error=ok ? NULL : timeout ? "Keyboard command timed out" : "Keyboard command failed"});
@@ -341,6 +360,9 @@ int main(int argc, char **argv) {
     struct runtime r={.output.scale=1, .subscriber.fd=-1, .job.fd=-1, .start_app=-1, .stop_app=-1, .check_app=-1, .start_setting=-1, .stop_setting=-1, .keyboard_start=-1, .keyboard_toggle=-1, .syncing=true};
     if (!config_load(&r.config, argv[1])) return 2;
     state_init(&r.state);
+    struct utsname machine;
+    if (!uname(&machine)) r.state.current_core = !strcmp(machine.machine, "aarch64") ? CORE_ARM :
+        !strcmp(machine.machine, "riscv64") ? CORE_RISCV : CORE_UNKNOWN;
     r.state.revision=(now_ms()<<16) ^ (unsigned)getpid();
     if (pipe2(signal_pipe, O_CLOEXEC|O_NONBLOCK)) return 1;
     struct sigaction sa={.sa_handler=on_signal, .sa_flags=SA_RESTART|SA_NOCLDSTOP};

@@ -23,17 +23,19 @@ struct config {
     struct setting settings[MAX_SETTINGS];
     char output[128], backlight[512], font[64];
     int bar_height, font_size;
+    bool core_reboot;
 };
 struct unit_state { bool active, ready, stopping, pending, failed; char result[32]; };
 struct output { int width, full_width, full_height, scale; bool half; };
-enum phase { HOME, GROUP, APP, SETTINGS, DISPLAY, RADIOS, SETTING, ERROR_SHOWN, DISPLAY_SIZE };
+enum phase { HOME, GROUP, APP, SETTINGS, DISPLAY, RADIOS, SETTING, ERROR_SHOWN, DISPLAY_SIZE, CORE, CORE_CONFIRM };
+enum core { CORE_UNKNOWN, CORE_ARM, CORE_RISCV };
 enum event_type {
     TAP_APP, TAP_GROUP, TAP_CLOSE, TAP_SETTINGS, TAP_BACK, TAP_ERROR, TAP_DIM, TAP_BRIGHT,
     TAP_DISPLAY, TAP_RADIOS, TAP_SETTING, TAP_ENABLE, TAP_DISABLE, TAP_JOIN, SETTING_CHANGED, SETTING_FAILED, TAP_KEYBOARD, KEYBOARD_DONE,
-    TAP_SIZE, TAP_FULL, TAP_HALF, DISPLAY_DONE,
+    TAP_SIZE, TAP_FULL, TAP_HALF, DISPLAY_DONE, TAP_CORE, TAP_ARM, TAP_RISCV, TAP_REBOOT, REBOOT_FAILED,
     WINDOW_NEW, WINDOW_CLOSED, UNIT_CHANGED, OP_FAILED, TICK
 };
-enum effect { START = 1, STOP = 2, CHECK_UNIT = 4, DIM = 8, BRIGHT = 16, READ_SETTINGS = 32, ENABLE_SETTING = 64, TOGGLE_KEYBOARD = 128, DISABLE_SETTING = 256, FULL_SIZE = 512, HALF_SIZE = 1024 };
+enum effect { START = 1, STOP = 2, CHECK_UNIT = 4, DIM = 8, BRIGHT = 16, READ_SETTINGS = 32, ENABLE_SETTING = 64, TOGGLE_KEYBOARD = 128, DISABLE_SETTING = 256, FULL_SIZE = 512, HALF_SIZE = 1024, REBOOT_CORE = 2048 };
 struct event {
     enum event_type type;
     int app;
@@ -47,6 +49,8 @@ struct state {
     int app, setting, group;
     bool setting_known[MAX_SETTINGS], setting_busy;
     bool display_busy, half_mode, half_size;
+    enum core current_core, target_core;
+    bool reboot_busy;
     struct setting_status setting_status[MAX_SETTINGS];
     uint64_t con_id, revision, deadline;
     bool window, keyboard_busy;
