@@ -27,6 +27,7 @@ let
 
     # BT over SDIO (hci0), from the combo firmware wifi already loads.
     bluetooth = cfg.wifi.bluetooth == "sdio";
+    reclaimTxBuffer = cfg.wifi.onDemand;
   };
 in
 {

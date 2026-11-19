@@ -1,0 +1,25 @@
+The reserved TX skb is allocated during module initialization or SDIO probe,
+both sleepable paths. Allow additional reclaim and compaction attempts for this
+costly allocation when loading under memory pressure, while retaining failure
+handling. Runtime packet allocations are unchanged.
+
+--- a/src/SDIO/driver_fw/driver/aic8800/aic8800_bsp/aic_bsp_driver.c
++++ b/src/SDIO/driver_fw/driver/aic8800/aic8800_bsp/aic_bsp_driver.c
+@@ -2252,7 +2252,7 @@ int aicbsp_resv_mem_init(void)
+     int i = 0;
+ 	printk("%s \n",__func__);
+     for (i = 0; i < sizeof(resv_skb) / sizeof(resv_skb[0]); i++) {
+-            resv_skb[i].skb = dev_alloc_skb(resv_skb[i].size);
++            resv_skb[i].skb = __dev_alloc_skb(resv_skb[i].size, GFP_KERNEL | __GFP_RETRY_MAYFAIL);
+     }
+     return 0;
+ }
+@@ -2282,7 +2282,7 @@ struct sk_buff *aicbsp_resv_mem_alloc_skb(unsigned int length, uint32_t id)
+ 
+     if (resv_skb[id].skb == NULL) {
+             pr_err("aicbsp: %s, mem not initialazed\n", __func__);
+-            resv_skb[id].skb = dev_alloc_skb(resv_skb[id].size);
++            resv_skb[id].skb = __dev_alloc_skb(resv_skb[id].size, GFP_KERNEL | __GFP_RETRY_MAYFAIL);
+             if (resv_skb[id].skb == NULL) {
+                     pr_err("aicbsp: %s, mem reinitial still fail\n", __func__);
+                     goto fail;
