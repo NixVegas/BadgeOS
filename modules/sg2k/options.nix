@@ -60,6 +60,8 @@ in
       description = "DRAM size in MiB.";
     };
 
+    memory.stripModuleSymbols = mkEnableOption "discarding the compiler-local symbols that loaded kernel modules keep in memory";
+
     memory.cmaMiB = mkOption {
       type = types.int;
       # The desktop and video profiles raise it to 128.
