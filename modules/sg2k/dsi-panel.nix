@@ -19,8 +19,10 @@ in
     ];
 
     hardware.sg2k.display.enable = lib.mkDefault true;
+    hardware.sg2k.display.rotation = lib.mkDefault 90;
     hardware.sg2k.display.autoLoadDrm = lib.mkForce false;
     hardware.sg2k.display.drmDevice = lib.mkDefault "/dev/dri/badge-panel";
+    hardware.sg2k.memory.cmaMiB = lib.mkIf (cfg.display.rotation != 0) (lib.mkDefault 32);
     hardware.sg2k.memory.stripModuleSymbols = lib.mkDefault true;
 
     badge.graphics = lib.mkIf graphics.enable {
@@ -32,6 +34,9 @@ in
       options cv181x_mipi_tx disp_working_bank=1
       # The panel's CST340 runs its firmware but does not answer the ROM handshake.
       options hynitron_cstxxx firmware_probe=1
+    ''
+    + lib.optionalString (cfg.display.rotation != 0) ''
+      options soph_drm rotation=${toString cfg.display.rotation}
     '';
 
     systemd.services.greetd.after = lib.mkIf graphics.enable [

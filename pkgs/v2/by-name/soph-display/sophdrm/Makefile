@@ -2,6 +2,7 @@ include $(PWD)/../Makefile.interdrv.param
 
 obj-m += soph_drm.o
 soph_drm-y += sophdrm.o
+soph_drm-y += soph_rot.o
 
 # Same include set as interdrv/vpss; Makefile.interdrv.param supplies -D__CV181X__.
 ccflags-y += -I$(PWD)/../vpss/chip/$(CVIARCH_L)/ -I$(PWD)/../vpss/common/

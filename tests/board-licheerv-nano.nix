@@ -88,6 +88,9 @@ let
       !has "hynitron_cstxxx firmware_probe=1" panel.boot.extraModprobeConfig
     ) "dsiPanel: the touchscreen has no firmware_probe"
     ++ lib.optional (
+      panel.hardware.sg2k.display.rotation != 90 || panel.hardware.sg2k.memory.cmaMiB != 32
+    ) "dsiPanel: not rotated in hardware with 32 MiB"
+    ++ lib.optional (
       panel.system.build.activeFip.drvPath == config.system.build.activeFip.drvPath
     ) "dsiPanel: the fip does not release the touch pads";
 in

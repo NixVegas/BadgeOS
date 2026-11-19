@@ -170,6 +170,10 @@ in
         assertion = cfg.dsiPanel.enable -> !cfg.hdmi.enable;
         message = "hardware.sg2k.dsiPanel.enable needs hardware.sg2k.hdmi.enable off: they share the DSI port";
       }
+      {
+        assertion = cfg.display.rotation == 0 || cfg.dsiPanel.enable;
+        message = "hardware.sg2k.display.rotation needs hardware.sg2k.dsiPanel.enable";
+      }
     ];
   };
 }

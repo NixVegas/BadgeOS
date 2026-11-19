@@ -106,6 +106,10 @@ the HDMI desktop profile or its extra memory reservation. The panel also turns o
 `hardware.sg2k.memory.stripModuleSymbols`, which drops the compiler-local symbols that
 loaded kernel modules otherwise keep in memory.
 
+The SoC turns the panel's picture by default (`hardware.sg2k.display.rotation = 90`),
+which adjusts the touch coordinates and reserves 32 MiB of contiguous memory. Set it to
+`270` to turn it the other way, or to `0` to leave the turning to Sway, which is slower.
+
 ### Other boards
 
 If your board is close to one of these but not quite the same, everything a board file

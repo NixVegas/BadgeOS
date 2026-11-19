@@ -99,6 +99,21 @@ in
       '';
     };
 
+    rotation = lib.mkOption {
+      type = lib.types.enum [
+        0
+        90
+        270
+      ];
+      # The DSI panel sets 90.
+      default = 0;
+      description = ''
+        Rotate packed RGB scanout clockwise in the SoC rotator. Quarter turns
+        expose a mode with swapped dimensions and require padded packed RGB buffers.
+        Requires the DSI panel. A timed-out rotation disables rotation until reboot.
+      '';
+    };
+
     drmDevice = lib.mkOption {
       type = lib.types.str;
       default = "";

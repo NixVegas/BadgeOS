@@ -48,8 +48,14 @@ let
         bindsym $mod+Shift+m exec swaymsg output ${cfg.outputName} mode ${cfg.outputMode}
       ''
     }${lib.optionalString sg2k.dsiPanel.enable ''
-      output ${cfg.outputName} transform 90
+      ${lib.optionalString (sg2k.display.rotation == 0) "output ${cfg.outputName} transform 90"}
       input type:touch map_to_output ${cfg.outputName}
+      ${lib.optionalString (
+        sg2k.display.rotation == 90
+      ) "input type:touch calibration_matrix 0 1 0 -1 0 1"}
+      ${lib.optionalString (
+        sg2k.display.rotation == 270
+      ) "input type:touch calibration_matrix 0 -1 1 1 0 0"}
     ''}'';
 in
 {
@@ -100,6 +106,7 @@ in
     nixpkgs.overlays = [
       (import ../../pkgs/v2/overlays/graphics.nix)
       (import ../../pkgs/v2/patches/overlay.nix {
+        withRgb888 = sg2k.dsiPanel.enable && sg2k.display.rotation != 0;
         withAutologinUnlock = sg2k.dsiPanel.enable;
       })
     ];
