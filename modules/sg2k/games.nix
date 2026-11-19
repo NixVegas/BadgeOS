@@ -108,8 +108,16 @@ let
       "$@"
   '';
 
-  # "Nix Fixes This", a 640x360 CPU-rendered demoscene prod with a chiptune.
-  badge-demo-bin = pkgs.nix-fixes-this;
+  # "Nix Fixes This", a 640x360 CPU-rendered demoscene prod with a chiptune. With a
+  # demoSize it renders into a window of that size.
+  demoSize = map lib.toInt (lib.splitString "x" cfg.demoSize);
+  badge-demo-bin = pkgs.nix-fixes-this.override (
+    lib.optionalAttrs (cfg.demoSize != null) {
+      windowed = true;
+      width = lib.elemAt demoSize 0;
+      height = lib.elemAt demoSize 1;
+    }
+  );
   badge-demo = pkgs.writeShellScriptBin "badge-demo" ''
     export SDL_VIDEODRIVER="''${SDL_VIDEODRIVER:-wayland}"
     export SDL_AUDIODRIVER="''${SDL_AUDIODRIVER:-alsa}"
@@ -128,6 +136,13 @@ in
       type = lib.types.bool;
       default = false;
       description = ''Install the "Nix Fixes This" demoscene prod (badge-demo).'';
+    };
+
+    demoSize = lib.mkOption {
+      type = lib.types.nullOr (lib.types.strMatching "[1-9][0-9]*x[1-9][0-9]*");
+      default = null;
+      example = "552x320";
+      description = "Size of the demo's window, or null for the fullscreen 1280x720 demo.";
     };
 
     autostartDemo = lib.mkOption {
@@ -199,6 +214,8 @@ in
       ]
       ++ lib.optionals (cfg.demo || cfg.autostartDemo) [ badge-demo ];
 
+    badge.graphics.demo = lib.mkIf touch (lib.mkDefault true);
+
     badge.graphics.touchBar.apps = lib.mkIf touch {
       doom = lib.mkIf cfg.quake {
         label = "Doom";
@@ -212,6 +229,11 @@ in
         command = lib.getExe badge-quake3;
         hideBar = true;
       };
+      demo = lib.mkIf (cfg.demo || cfg.autostartDemo) {
+        label = "Nix Fixes This";
+        group = "Demos";
+        command = lib.getExe badge-demo;
+      };
     };
 
     systemd.user.services = lib.mkIf touch {
@@ -220,6 +242,13 @@ in
         serviceConfig.NoNewPrivileges = true;
       };
       badge-app-quake = lib.mkIf cfg.quake { serviceConfig.NoNewPrivileges = true; };
+      badge-app-demo = lib.mkIf (cfg.demo || cfg.autostartDemo) {
+        environment = {
+          SDL_APP_ID = "badge-demo";
+          # SDL's own choice, not the launcher's ALSA: sound follows the session's server.
+          SDL_AUDIODRIVER = "pipewire,pulseaudio,alsa";
+        };
+      };
     };
   };
 }

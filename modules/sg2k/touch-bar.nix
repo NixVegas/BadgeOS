@@ -118,7 +118,7 @@ let
   ) (lib.filterAttrs (_: app: !app.system) cfg.apps);
   systemApps = map (a: a.unit) (lib.filter (a: a.system) (builtins.attrValues cfg.apps));
   settingUnits = map (s: s.unit) settings;
-  # Games lead the menu in this order; the other apps follow by name.
+  # The games and demos lead the menu in this order; the other apps follow by name.
   rank =
     id:
     lib.lists.findFirstIndex (n: n == id) 4 [

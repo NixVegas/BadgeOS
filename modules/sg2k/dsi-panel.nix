@@ -28,6 +28,8 @@ in
     badge.graphics = lib.mkIf graphics.enable {
       outputName = lib.mkDefault "DSI-1";
       outputMode = lib.mkDefault "native";
+      # Under the touch menu: the rotated panel's width, and its height less the bar.
+      demoSize = lib.mkIf graphics.touchBar.enable (lib.mkDefault "552x320");
     };
 
     boot.extraModprobeConfig = ''

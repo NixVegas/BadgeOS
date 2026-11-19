@@ -115,8 +115,9 @@ which adjusts the touch coordinates and reserves 32 MiB of contiguous memory. Se
 ### Touch desktop
 
 On the panel's desktop a touch menu runs along the bottom of the screen. Its Home has
-Games (Doom and Quake), Tools (a terminal and system information) and Settings. Set
-`badge.graphics.touchBar.enable = false` for Sway without it.
+Games (Doom and Quake), Demos (Nix Fixes This), Tools (a terminal and system
+information) and Settings. Set `badge.graphics.touchBar.enable = false` for Sway without
+it.
 
 With the menu, WiFi and Bluetooth are off at boot, and you turn them on from Settings.
 Their driver loads the first time you do, and stays loaded after that. There's no sound at
