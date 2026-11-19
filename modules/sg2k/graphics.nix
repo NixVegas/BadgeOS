@@ -115,6 +115,7 @@ in
       (import ../../pkgs/v2/patches/overlay.nix {
         withRgb888 = sg2k.dsiPanel.enable && sg2k.display.rotation != 0;
         withAutologinUnlock = sg2k.dsiPanel.enable;
+        withTouchControls = cfg.touchBar.enable;
       })
     ];
 

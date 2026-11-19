@@ -9,10 +9,13 @@
 #
 # withAutologinUnlock: also patch greetd to unlock the memory of its automatic login,
 # for the panel's desktop.
+#
+# withTouchControls: also give the games their touch controls, for the touch bar.
 {
   withPixman ? true,
   withRgb888 ? false,
   withAutologinUnlock ? false,
+  withTouchControls ? false,
 }:
 final: prev:
 let
@@ -41,6 +44,9 @@ in
   # The pixman renderer's NV12 to XRGB8888 converter (wlroots 0002) against a
   # floating-point reference, compiled from this set's patched wlroots source.
   wlroots-nv12-tests = final.callPackage ./wlroots/tests.nix { };
+
+  # The games' touch-control core (panel-touch 0001) against its unit test.
+  panel-touch-tests = final.callPackage ./panel-touch/tests.nix { };
 }
 // prev.lib.optionalAttrs withPixman {
   pixman = addPatches prev.pixman (import ./pixman);
