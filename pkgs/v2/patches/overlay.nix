@@ -45,7 +45,8 @@ in
   # floating-point reference, compiled from this set's patched wlroots source.
   wlroots-nv12-tests = final.callPackage ./wlroots/tests.nix { };
 
-  # The games' touch-control core (panel-touch 0001) against its unit test.
+  # The games' touch-control core (panel-touch 0001, in both games' lists) against
+  # its unit test.
   panel-touch-tests = final.callPackage ./panel-touch/tests.nix { };
 }
 // prev.lib.optionalAttrs withPixman {
@@ -55,5 +56,6 @@ in
   greetd = addPatches prev.greetd (import ./greetd);
 }
 // prev.lib.optionalAttrs withTouchControls {
+  ioquake3 = addPatches prev.ioquake3 (import ./ioquake3);
   crispy-doom = addPatches prev.crispy-doom (import ./crispy-doom);
 }

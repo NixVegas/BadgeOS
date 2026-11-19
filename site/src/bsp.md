@@ -115,7 +115,7 @@ which adjusts the touch coordinates and reserves 32 MiB of contiguous memory. Se
 ### Touch desktop
 
 On the panel's desktop a touch menu runs along the bottom of the screen. Its Home has
-Games (Doom), Tools (a terminal and system information) and Settings. Set
+Games (Doom and Quake), Tools (a terminal and system information) and Settings. Set
 `badge.graphics.touchBar.enable = false` for Sway without it.
 
 With the menu, WiFi and Bluetooth are off at boot, and you turn them on from Settings.
@@ -125,9 +125,9 @@ follows it, in the games too. A Nano without the menu keeps its usual radio defa
 
 Settings has Display and Radios (WiFi and Bluetooth). Display has the brightness.
 
-Doom hides the bar while it runs, so quit from the game's own menu. Other apps get a Close
-button, and the ones that take text a Keyboard button for the on-screen keyboard. Apps
-take longer to open on the RISC-V core.
+Doom and Quake hide the bar while they run, so quit from the game's own menu. Other apps
+get a Close button, and the ones that take text a Keyboard button for the on-screen
+keyboard. Apps take longer to open on the RISC-V core.
 
 ### Other boards
 

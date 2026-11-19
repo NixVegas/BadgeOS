@@ -42,6 +42,25 @@ let
     withTouch = touch;
   };
 
+  # A native mode has no 640x360 to switch to: the picture is the output's size.
+  quakeSize = lib.optionalString (cfg.outputMode == "native") ''
+    read -r Q3_W Q3_H < <(${config.programs.sway.package}/bin/swaymsg -rt get_outputs |
+      ${lib.getExe pkgs.jq} -r --arg name ${lib.escapeShellArg cfg.outputName} \
+        '.[] | select(.name == $name) | .rect | "\(.width) \(.height)"')
+  '';
+
+  # The touch controls: their settings, and the native game code they run with, in
+  # a home path of their own.
+  quakeTouch = lib.optionalString touch ''
+    export BADGE_PANEL_TOUCH=1 SDL_APP_ID=badge-quake SDL_VIDEO_WAYLAND_WMCLASS=badge-quake
+    export Q3_SOUND=''${Q3_SOUND:-1}
+    dir=''${XDG_DATA_HOME:-$HOME/.local/share}/badge-panel-quake
+    ${pkgs.coreutils}/bin/mkdir -p "$dir/baseq3"
+    ${pkgs.coreutils}/bin/install -m644 ${../../pkgs/v2/patches/ioquake3/panel.cfg} "$dir/baseq3/autoexec.cfg"
+    ${pkgs.coreutils}/bin/ln -sf ${pkgs.ioquake3}/share/ioquake3/baseq3/*.so "$dir/baseq3/"
+    set -- +set fs_homepath "$dir" +map q3dm1 "$@"
+  '';
+
   # ioquake3 tuned for llvmpipe on one in-order core. Keep the depth test (early-Z)
   # and mipmaps on.
   badge-quake3 = pkgs.writeShellScriptBin "badge-quake3" ''
@@ -52,6 +71,7 @@ let
 
     # Rasterise inline: one worker thread on one CPU costs 32%.
     export LP_NUM_THREADS="''${LP_NUM_THREADS:-0}"
+    ${quakeSize}${quakeTouch}
 
     # A persistent JIT cache: the first frame takes ~2.5 s cold, ~0.14 s warm.
     export MESA_SHADER_CACHE_DIR="''${MESA_SHADER_CACHE_DIR:-$HOME/.cache/mesa_shader_cache}"
@@ -186,6 +206,12 @@ in
         command = lib.getExe badge-doom;
         hideBar = true;
       };
+      quake = lib.mkIf cfg.quake {
+        label = "Quake";
+        group = "Games";
+        command = lib.getExe badge-quake3;
+        hideBar = true;
+      };
     };
 
     systemd.user.services = lib.mkIf touch {
@@ -193,6 +219,7 @@ in
         environment.DOOMWADDIR = "${freedoomWads}/share/games/doom";
         serviceConfig.NoNewPrivileges = true;
       };
+      badge-app-quake = lib.mkIf cfg.quake { serviceConfig.NoNewPrivileges = true; };
     };
   };
 }
