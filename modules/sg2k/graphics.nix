@@ -14,9 +14,9 @@ let
   # A minimal sway config for a board with no keyboard, no GPU and one core.
   swayConfig = pkgs.writeText "badge-sway.config" ''
     # soph_drm's HDMI output, in outputMode.
-    output HDMI-A-1 position 0 0
-    output HDMI-A-1 mode ${cfg.outputMode}
-    output HDMI-A-1 bg #101015 solid_color
+    output ${cfg.outputName} position 0 0
+    ${lib.optionalString (cfg.outputMode != "native") "output ${cfg.outputName} mode ${cfg.outputMode}"}
+    output ${cfg.outputName} bg #101015 solid_color
 
     # No title bars or gaps: the CPU draws every pixel.
     default_border none
@@ -32,18 +32,34 @@ let
     bindsym $mod+Return exec ${pkgs.foot}/bin/foot
     bindsym $mod+Shift+q kill
     bindsym $mod+Shift+e exec swaymsg exit
-    # Back to the desktop mode, for an app that died with the output switched.
-    bindsym $mod+Shift+m exec swaymsg output HDMI-A-1 mode ${cfg.outputMode}
-  '';
+    ${
+      lib.optionalString (cfg.outputMode != "native") ''
+        # Back to the desktop mode, for an app that died with the output switched.
+        bindsym $mod+Shift+m exec swaymsg output ${cfg.outputName} mode ${cfg.outputMode}
+      ''
+    }${lib.optionalString sg2k.dsiPanel.enable ''
+      output ${cfg.outputName} transform 90
+      input type:touch map_to_output ${cfg.outputName}
+    ''}'';
 in
 {
   options.badge.graphics = {
-    enable = lib.mkEnableOption "Sway on DRM/KMS, software-rendered";
+    enable = lib.mkEnableOption "Sway on DRM/KMS, software-rendered" // {
+      default = sg2k.dsiPanel.enable;
+      defaultText = lib.literalExpression "config.hardware.sg2k.dsiPanel.enable";
+    };
+
+    outputName = lib.mkOption {
+      type = lib.types.str;
+      default = "HDMI-A-1";
+      description = "Sway output name: HDMI-A-1 for the badge, DSI-1 for the DSI panel.";
+    };
 
     outputMode = lib.mkOption {
       type = lib.types.enum [
         "1280x720"
         "640x360"
+        "native"
       ];
       default = "1280x720";
       description = ''
@@ -51,6 +67,7 @@ in
         "1280x720": the DISP video layer scans the compositor's RGB888 buffer 1:1.
         "640x360": the DISP GOP doubles an XRGB8888 buffer, for a quarter of the
         pixels to render and a third of the scanout bandwidth.
+        "native": no mode line; the output's preferred mode, for a panel.
       '';
     };
 
@@ -66,7 +83,9 @@ in
     # Mesa and SDL3 trimmed, then the pkgs/patches package patches.
     nixpkgs.overlays = [
       (import ../../pkgs/v2/overlays/graphics.nix)
-      (import ../../pkgs/v2/patches/overlay.nix { })
+      (import ../../pkgs/v2/patches/overlay.nix {
+        withAutologinUnlock = sg2k.dsiPanel.enable;
+      })
     ];
 
     hardware.graphics.enable = true;
@@ -91,6 +110,9 @@ in
 
     # graphical-desktop's default: ~660 MiB of screen reader nobody runs.
     services.speechd.enable = false;
+
+    # Sway's default: four portal processes started by the first SDL window, for nothing on the panel.
+    xdg.portal.wlr.enable = lib.mkIf sg2k.dsiPanel.enable (lib.mkForce false);
 
     programs.sway = {
       enable = true;

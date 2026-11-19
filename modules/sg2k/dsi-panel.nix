@@ -23,6 +23,11 @@ in
     hardware.sg2k.display.drmDevice = lib.mkDefault "/dev/dri/badge-panel";
     hardware.sg2k.memory.stripModuleSymbols = lib.mkDefault true;
 
+    badge.graphics = lib.mkIf graphics.enable {
+      outputName = lib.mkDefault "DSI-1";
+      outputMode = lib.mkDefault "native";
+    };
+
     boot.extraModprobeConfig = ''
       options cv181x_mipi_tx disp_working_bank=1
       # The panel's CST340 runs its firmware but does not answer the ROM handshake.
