@@ -54,3 +54,6 @@ in
 // prev.lib.optionalAttrs withAutologinUnlock {
   greetd = addPatches prev.greetd (import ./greetd);
 }
+// prev.lib.optionalAttrs withTouchControls {
+  crispy-doom = addPatches prev.crispy-doom (import ./crispy-doom);
+}

@@ -4,8 +4,17 @@
   writeShellApplication,
   coreutils,
   gnugrep,
+  jq,
   badge-game,
   crispy-doom,
+  # For swaymsg. The badge passes its session's sway, config.programs.sway.package.
+  sway,
+  # badge.graphics.outputMode is "native": fullscreen at the desktop's size, with
+  # no 640x360 mode to switch to.
+  nativeMode ? false,
+  # The touch controls, in a window as large as the output outputName.
+  withTouch ? false,
+  outputName ? "HDMI-A-1",
 }:
 writeShellApplication {
   name = "badge-doom";
@@ -15,6 +24,10 @@ writeShellApplication {
     gnugrep
     badge-game
     crispy-doom
+  ]
+  ++ lib.optionals withTouch [
+    sway
+    jq
   ];
 
   runtimeEnv = {
@@ -24,6 +37,22 @@ writeShellApplication {
     SDL_VIDEO_WAYLAND_SHM_FORMAT = "SDL_PIXELFORMAT_XRGB8888";
     # crispy-doom redraws the whole window, pillarboxes included, every frame.
     SDL_VIDEO_WAYLAND_FRAMEBUFFER_NO_COPY = "1";
+  }
+  // lib.optionalAttrs nativeMode {
+    BADGE_DOOM_DEFAULTS = "${./native-defaults.cfg}";
+  }
+  // lib.optionalAttrs withTouch {
+    BADGE_DOOM_DEFAULTS = "${./panel-defaults.cfg}";
+    BADGE_DOOM_KEYS = "${./keys.cfg}";
+    BADGE_DOOM_OUTPUT = outputName;
+    BADGE_PANEL_TOUCH = "1";
+    SDL_VIDEODRIVER = "wayland";
+    SDL_APP_ID = "badge-doom";
+    SDL_VIDEO_WAYLAND_WMCLASS = "badge-doom";
+    SDL_VIDEO_WAYLAND_SHM_FORMAT = "SDL_PIXELFORMAT_BGR24";
+    SDL_VIDEO_WAYLAND_FRAMEBUFFER_NO_COPY = "0";
+    SDL_FRAMEBUFFER_ACCELERATION = "0";
+    SDL_RENDER_DRIVER = "software";
   };
 
   text = builtins.readFile ./badge-doom.sh;

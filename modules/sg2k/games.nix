@@ -8,6 +8,7 @@
 }:
 let
   cfg = config.badge.graphics;
+  touch = cfg.touchBar.enable;
 
   # The demo's pak0 for assets plus the 1.32 point release, whose QVMs ioquake3
   # accepts. The directory must be literally baseq3.
@@ -27,8 +28,18 @@ let
 
   # Runs a game and puts the output back in the desktop mode however it ends.
   badge-game = pkgs.badge-game.override {
-    inherit (cfg) outputMode;
+    inherit (cfg) outputMode outputName;
     sway = config.programs.sway.package;
+  };
+
+  # Crispy DOOM with touch controls under the bar, and at the desktop's size in a
+  # native mode.
+  badge-doom = pkgs.badge-doom.override {
+    inherit badge-game;
+    inherit (cfg) outputName;
+    sway = config.programs.sway.package;
+    nativeMode = cfg.outputMode == "native";
+    withTouch = touch;
   };
 
   # ioquake3 tuned for llvmpipe on one in-order core. Keep the depth test (early-Z)
@@ -163,9 +174,25 @@ in
         pkgs.quake3demodata
         pkgs.quake3pointrelease
         pkgs.crispy-doom
-        (pkgs.badge-doom.override { inherit badge-game; })
+        badge-doom
         badge-game
       ]
       ++ lib.optionals (cfg.demo || cfg.autostartDemo) [ badge-demo ];
+
+    badge.graphics.touchBar.apps = lib.mkIf touch {
+      doom = lib.mkIf cfg.quake {
+        label = "Doom";
+        group = "Games";
+        command = lib.getExe badge-doom;
+        hideBar = true;
+      };
+    };
+
+    systemd.user.services = lib.mkIf touch {
+      badge-app-doom = lib.mkIf cfg.quake {
+        environment.DOOMWADDIR = "${freedoomWads}/share/games/doom";
+        serviceConfig.NoNewPrivileges = true;
+      };
+    };
   };
 }

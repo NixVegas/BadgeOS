@@ -55,7 +55,7 @@ in
     ++ lib.optional (!c.hardware.sg2k.memory.stripModuleSymbols) "the panel keeps its module symbols"
     ++ lib.optional (
       lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps)
-      != "bluetooth-devices info terminal wifi-join"
+      != "bluetooth-devices doom info terminal wifi-join"
     ) "full menu differs"
     ++ lib.optional (
       !lib.all (a: a.system || c.systemd.user.services ? ${lib.removeSuffix ".service" a.unit}) (
@@ -70,6 +70,7 @@ in
       c.badge.graphics.touchBar.apps != { } || c.badge.graphics.extraConfig != ""
     ) "the bar is configured"
     ++ lib.optional c.hardware.sg2k.wifi.onDemand "the radios are on demand"
+    ++ lib.optional (!lib.elem "badge-doom" (map nameOf c.environment.systemPackages)) "no games"
   );
   sg2k-panel-off = scenario "sg2k-panel-off" [ { badge.graphics.enable = true; } ] (
     c:
