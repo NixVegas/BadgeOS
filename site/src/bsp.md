@@ -119,8 +119,9 @@ Tools (a terminal and system information) and Settings. Set
 `badge.graphics.touchBar.enable = false` for Sway without it.
 
 With the menu, WiFi and Bluetooth are off at boot, and you turn them on from Settings.
-Their driver loads the first time you do, and stays loaded after that. A Nano without the
-menu keeps its usual radio defaults.
+Their driver loads the first time you do, and stays loaded after that. There's no sound at
+boot either: connect a Bluetooth audio device from Settings, under Bluetooth, and sound
+follows it, in the games too. A Nano without the menu keeps its usual radio defaults.
 
 Settings has Display and Radios (WiFi and Bluetooth). Display has the brightness.
 

@@ -10,7 +10,8 @@ let
   graphics = config.badge.graphics;
   sg2k = config.hardware.sg2k;
   enabled = sg2k.enable && graphics.enable && cfg.enable;
-  tools = pkgs.badge-panel-tools;
+  managedAudio = config.services.pipewire.enable && !config.services.pipewire.socketActivation;
+  tools = pkgs.badge-panel-tools.override { withAudio = managedAudio; };
   wifi = sg2k.wifi.enable && sg2k.wifi.onDemand;
   bluetooth = wifi && config.hardware.bluetooth.enable;
   settings =
@@ -227,6 +228,7 @@ in
           };
           badge-panel-bluetooth = lib.mkIf bluetooth {
             serviceConfig = {
+              ExecStartPost = lib.mkIf managedAudio "-${config.systemd.package}/bin/systemctl --user --machine=badge@.host --no-block start badge-panel-bluetooth-audio-watch.service";
               TimeoutStartSec = cfg.limits.start;
               TimeoutStopSec = cfg.limits.stop;
             };
@@ -296,6 +298,8 @@ in
             command = "${footApp "--app-id=badge-bluetooth-devices"} ${lib.getExe' tools "badge-panel-bluetooth-devices"}";
           };
         };
+        # Session sound starts with a connected Bluetooth audio device, not at login.
+        services.pipewire.socketActivation = lib.mkIf bluetooth (lib.mkDefault false);
         systemd.user.services = {
           "badge-panel-keyboard@" = lib.mkIf (lib.any (a: a.keyboard) (builtins.attrValues cfg.apps)) {
             description = "Panel app keyboard";
@@ -308,6 +312,16 @@ in
               ExecStart = lib.getExe keyboard;
               ExecStartPost = lib.getExe keyboardReady;
               TimeoutStartSec = cfg.limits.start;
+            };
+          };
+          badge-panel-bluetooth-audio-watch = lib.mkIf (managedAudio && bluetooth) {
+            description = "Audio for connected Bluetooth audio devices";
+            unitConfig.ConditionUser = "badge";
+            serviceConfig = {
+              ExecStart = lib.getExe' tools "badge-panel-bluetooth-audio-watch";
+              Restart = "on-failure";
+              RestartSec = 5;
+              TimeoutStopSec = cfg.limits.stop;
             };
           };
         };
