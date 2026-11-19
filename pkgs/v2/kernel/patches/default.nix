@@ -181,6 +181,7 @@ in
     patch = ./hynitron-cstxxx-firmware-probe.patch;
   }
   {
+    # The LicheeRV Nano's DSI panel touchscreen (hardware.sg2k.dsiPanel).
     name = "enable-hynitron-touchscreen";
     patch = null;
     structuredExtraConfig = with lib.kernel; {
