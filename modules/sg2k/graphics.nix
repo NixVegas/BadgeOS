@@ -71,6 +71,11 @@ in
 
     hardware.graphics.enable = true;
 
+    # Each udev worker takes memory from the compositor; two are enough at 256 MiB.
+    environment.etc."udev/udev.conf.d/10-children-max.conf" = lib.mkIf (sg2k.memory.sizeMiB <= 256) {
+      text = "children_max=2\n";
+    };
+
     # For sway outside a logind session (over ssh).
     services.seatd.enable = true;
     users.users.badge.extraGroups = [
