@@ -320,6 +320,25 @@ static int pipe_open(const struct cam_options *opt)
 	return 0;
 }
 
+/* These vendor stages require vector instructions unavailable to this process. */
+#if CAMERA_GRAYSCALE
+static int isp_disable_vector_stages(void)
+{
+	ISP_MESH_SHADING_ATTR_S mlsc;
+	ISP_CLUT_ATTR_S clut;
+
+	TRY(CVI_ISP_GetMeshShadingAttr(PIPE, &mlsc), (void)0);
+	mlsc.Enable = CVI_FALSE;
+	TRY(CVI_ISP_SetMeshShadingAttr(PIPE, &mlsc), (void)0);
+
+	TRY(CVI_ISP_GetClutAttr(PIPE, &clut), (void)0);
+	clut.Enable = CVI_FALSE;
+	TRY(CVI_ISP_SetClutAttr(PIPE, &clut), (void)0);
+
+	return 0;
+}
+#endif
+
 static int isp_open(void)
 {
 	ALG_LIB_S ae, awb;
@@ -354,6 +373,11 @@ static int isp_open(void)
 	pub.enWDRMode = WDR_MODE_NONE;
 	TRY(CVI_ISP_SetPubAttr(PIPE, &pub), (void)0);
 	TRY(CVI_ISP_Init(PIPE), st.isp = true);
+#if CAMERA_GRAYSCALE
+	if (isp_disable_vector_stages())
+		return -1;
+	fprintf(stderr, "badge-camera: mesh shading and color table: off\n");
+#endif
 
 	/* An ordinary thread: CVI_ISP_Run sleeps on the VI's frame events, and real-time
 	 * priority on one core would compete with the compositor. */

@@ -243,15 +243,23 @@ static struct cam_frame frame_cache(const struct cam_frame *f, unsigned step)
 	}
 	if (step == 1) {
 		memcpy(buf, f->y, ysz);
+#if !CAMERA_GRAYSCALE
 		memcpy(buf + ysz, f->vu, csz);
+#endif
 	} else {
 		for (i = 0; i < rows; i++)
 			memcpy(buf + (size_t)i * f->stride, f->y + (size_t)i * step * f->stride,
 			       f->stride);
+#if !CAMERA_GRAYSCALE
 		for (i = 0; i < crows; i++)
 			memcpy(buf + ysz + (size_t)i * f->stride,
 			       f->vu + (size_t)i * step * f->stride, f->stride);
+#endif
 	}
+#if CAMERA_GRAYSCALE
+	/* The gray preview: neutral chroma, so the frame's is not read. */
+	memset(buf + ysz, 128, csz);
+#endif
 	c.y = buf;
 	c.vu = buf + ysz;
 	c.height = rows;

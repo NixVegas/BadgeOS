@@ -14,6 +14,7 @@
   systemd,
   shellcheck-minimal,
   soph-sensor-gc4653,
+  grayscale ? false,
 }:
 let
   mpi = soph-sensor-gc4653.mpi;
@@ -59,7 +60,7 @@ stdenv.mkDerivation {
     runHook preBuild
     cpu=${lib.optionalString stdenv.hostPlatform.isAarch64 "-mcpu=cortex-a53"}
     $CC -O2 $cpu -Wall -Wextra -Werror \
-      -Wno-unused-parameter -D__CV181X__ \
+      -Wno-unused-parameter -D__CV181X__ -DCAMERA_GRAYSCALE=${if grayscale then "1" else "0"} \
       -I${mpi}/include -I${mpi}/include/isp/cv181x -I${mpi}/include/linux \
       $($PKG_CONFIG --cflags sdl3 libsystemd) \
       -c camera.c convert.c pipeline.c wifiqr.c vector-shim.c

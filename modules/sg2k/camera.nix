@@ -8,7 +8,7 @@
 let
   cfg = config.hardware.sg2k;
   graphics = config.badge.graphics;
-  camera = pkgs.badge-camera;
+  camera = pkgs.badge-camera.override { inherit (cfg.camera) grayscale; };
   # The vendor drivers bind the nodes as soon as they load; load them only on request,
   # after the VIP stack they share clocks and the system block with.
   modules = [
@@ -24,6 +24,12 @@ in
 {
   options.hardware.sg2k.camera = {
     enable = lib.mkEnableOption "the GC4653 camera on the panel carrier's MIPI CSI connector";
+    grayscale =
+      lib.mkEnableOption "a grayscale preview, without the ISP's color stages, which need the vector unit"
+      // {
+        default = pkgs.stdenv.hostPlatform.isRiscV;
+        defaultText = lib.literalExpression "pkgs.stdenv.hostPlatform.isRiscV";
+      };
   };
 
   config = lib.mkMerge [
