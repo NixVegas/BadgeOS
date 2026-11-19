@@ -3,6 +3,9 @@
   lib,
   stdenv,
   libgpiod,
+  writeShellApplication,
+  coreutils,
+  drmDevice ? "/dev/dri/badge-panel",
 }:
 stdenv.mkDerivation {
   pname = "st7701-panel-init";
@@ -25,6 +28,13 @@ stdenv.mkDerivation {
     install -Dm755 st7701-panel-init $out/bin/st7701-panel-init
     runHook postInstall
   '';
+
+  passthru.displayLink = writeShellApplication {
+    name = "nix-badge-panel-display-link";
+    runtimeInputs = [ coreutils ];
+    runtimeEnv.DRM_DEVICE = drmDevice;
+    text = builtins.readFile ./panel-display-link.sh;
+  };
 
   meta = {
     description = "Bring-up of the ST7701 DSI panel through the vendor mipi_tx driver";

@@ -43,7 +43,15 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = lib.getExe pkgs.st7701-panel-init;
-        ExecStartPost = lib.optionals graphics.enable [ "${pkgs.kmod}/bin/modprobe soph_drm" ];
+        ExecStartPost = lib.optionals graphics.enable (
+          [ "${pkgs.kmod}/bin/modprobe soph_drm" ]
+          ++ lib.optional (cfg.display.drmDevice != "") (
+            lib.getExe
+              (pkgs.st7701-panel-init.override {
+                drmDevice = cfg.display.drmDevice;
+              }).displayLink
+          )
+        );
       };
     };
   };
