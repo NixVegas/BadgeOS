@@ -1,0 +1,46 @@
+# Builds what a pull request changes: v1's firmware and v2's bootloaders and system
+# toplevels. A job whose output is already in cache.nixos.lv or cache.nixos.org is skipped,
+# and what is built takes its dependencies from the same caches. Hydra builds master there.
+# The signed badge1 images need autopen and are built only by Hydra.
+name: Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request supersedes a running build.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      DETSYS_IDS_TELEMETRY: disabled
+      NIX_SENTRY_ENDPOINT: ""
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3.24.3
+        with:
+          diagnostic-endpoint: ""
+          # cache.nixos.lv serves what the Nix Vegas builders signed.
+          extra-conf: |
+            extra-substituters = https://cache.nixos.lv
+            extra-trusted-public-keys = citadel.build.dc.nixos.lv-1:UZbkvFcWZr/VP7cvNPLRpcMTCvaYw7X5XQDzA+nPVxY= vehk.build.dc.nixos.lv-1:psDkpQYSSV4Y9nDgH0JiZnMNfQCJVkN0imkNTnChfag= ghostgate.build.dc.nixos.lv-1:rstKkWpdfCP+wz7v8GCUYBtJaRKyZrsDedOV0OrAXYk=
+
+      - name: Build
+        run: >-
+          nix run github:Mic92/nix-fast-build/2.1.0 --
+          --skip-cached
+          --no-nom
+          --systems x86_64-linux
+          --flake .#hydraJobs
+          --select 'jobs: { v1 = { inherit (jobs.v1) firmware; }; v2 = { inherit (jobs.v2) bootloader toplevels; }; }'
