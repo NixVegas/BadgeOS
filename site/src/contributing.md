@@ -37,9 +37,10 @@ with the `autopen` system feature.
 Hydra builds `hydraJobs`, which has `v1.firmware`, and under `v2` each board's toplevels,
 SD card images and fips (`toplevels.<board>`, `images.<board>` and `bootloader.<board>`,
 where the badge is `nixbadge`), sophgone's fips (`bootloader.sophgone`), and badge #1's
-signed cards and bundles (`badge1`). `nidhogg-manifest` lists every job's outputs for
-cache.nixos.lv, which keeps what recent evals built: one manifest for each job
-(`flake/manifest.nix`), since a manifest evaluates what it lists. This site is `nix build
+signed cards and bundles (`badge1`). A second jobset for each branch, `nidhogg`, lists
+every job's outputs for cache.nixos.lv, which keeps what recent evals built: one manifest
+for each job (`hydra/nidhogg/flake.nix`), since a manifest evaluates what it lists. This
+site is `nix build
 .#docs`, and its options reference is generated from the module, so new options should
 have a description.
 

@@ -10,7 +10,6 @@
     ./version.nix
     ./v1.nix
     ./v2
-    ./manifest.nix
   ];
 
   options.flake = flake-parts-lib.mkSubmoduleOptions {

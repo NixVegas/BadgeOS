@@ -4,7 +4,9 @@
 #
 # Each entry is a flake jobset (type 1) that builds a branch's `hydraJobs` from the public
 # upstream: master, and the release branch v<major>.<minor> of the flake's version template
-# (flake/version.nix, which flakever reads). The badge1 jobs need a builder with the
+# (flake/version.nix, which flakever reads). Each branch also has a jobset of the eval
+# manifests cache.nixos.lv keeps builds by (hydra/nidhogg/flake.nix): `nidhogg` for master,
+# `nidhogg-<branch>` for the others, so the main jobsets list only BadgeOS's jobs. The badge1 jobs need a builder with the
 # `autopen` system feature (see flake/v2/hydra.nix). When master moves to the next release,
 # add the old release branch to `branches` to keep its jobset.
 #
@@ -37,11 +39,23 @@ let
     keepnr = 3;
   };
 
+  mkManifestJobset =
+    branch:
+    mkJobset branch
+    // {
+      description = "BadgeOS ${branch}: eval manifests for cache.nixos.lv";
+      flake = "${upstream}?ref=${branch}&dir=hydra/nidhogg";
+    };
+
   jobsetsJson = builtins.toJSON (
     builtins.listToAttrs (
       map (branch: {
         name = branch;
         value = mkJobset branch;
+      }) branches
+      ++ map (branch: {
+        name = if branch == "master" then "nidhogg" else "nidhogg-${branch}";
+        value = mkManifestJobset branch;
       }) branches
     )
   );
