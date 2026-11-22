@@ -76,6 +76,10 @@ in
       text = "children_max=2\n";
     };
 
+    # The kernel's own reserve at 256 MiB is 1.7 MiB, which leaves drivers that load under
+    # the running desktop short of contiguous memory.
+    boot.kernel.sysctl."vm.min_free_kbytes" = lib.mkIf (sg2k.memory.sizeMiB <= 256) 3072;
+
     # For sway outside a logind session (over ssh).
     services.seatd.enable = true;
     users.users.badge.extraGroups = [
