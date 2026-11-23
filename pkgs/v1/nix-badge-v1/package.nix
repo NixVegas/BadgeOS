@@ -186,9 +186,20 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postBuild
   '';
 
+  # The files to flash, for Hydra and for cache.nixos.lv's downloads: the image of each
+  # partition (flash_args gives their offsets) and the NVS partition, which goes at 0x9000.
   installPhase = ''
     runHook preInstall
     cp -a build $out
+    cp ${nvs} $out/nvs.bin
+    mkdir -p $out/nix-support
+    cat > $out/nix-support/hydra-build-products <<EOF
+    file firmware $out/nixbadge.bin
+    file bootloader $out/bootloader/bootloader.bin
+    file partition-table $out/partition_table/partition-table.bin
+    file nvs $out/nvs.bin
+    file flash-args $out/flash_args
+    EOF
     runHook postInstall
   '';
 
