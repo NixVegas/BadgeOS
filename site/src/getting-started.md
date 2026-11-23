@@ -2,20 +2,20 @@
 
 ## Download the SD card image
 
-We build SD card images for every release on [our Hydra](https://hydra.nixos.lv/project/badgeos),
-so you don't have to compile anything. The current release lives on the `@RELEASE@` branch:
+We build SD card images for every release and keep them in [our cache](https://cache.nixos.lv/downloads/@SERIES@), so
+you don't have to compile anything. The current release lives on the `@RELEASE@` branch:
 
 | Board | Image |
 |---|---|
-| The badge | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.nixbadge.sdcard/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.nixbadge.sdcard)) |
-| LicheeRV Nano, both cores | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard)) |
-| LicheeRV Nano, RISC-V only | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-riscv/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-riscv)) |
-| LicheeRV Nano, ARM only | [`sdcard.img`](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-arm/latest/download-by-type/file/sd-image) ([job](https://hydra.nixos.lv/job/badgeos/@RELEASE@/v2.images.licheerv-nano.sdcard-arm)) |
+| The badge | [`sdcard.img`](https://cache.nixos.lv/downloads/@SERIES@/latest/v2.images.nixbadge.sdcard/sdcard.img) |
+| LicheeRV Nano, both cores | [`sdcard.img`](https://cache.nixos.lv/downloads/@SERIES@/latest/v2.images.licheerv-nano.sdcard/sdcard.img) |
+| LicheeRV Nano, RISC-V only | [`sdcard.img`](https://cache.nixos.lv/downloads/@SERIES@/latest/v2.images.licheerv-nano.sdcard-riscv/sdcard.img) |
+| LicheeRV Nano, ARM only | [`sdcard.img`](https://cache.nixos.lv/downloads/@SERIES@/latest/v2.images.licheerv-nano.sdcard-arm/sdcard.img) |
 
-Each link grabs the newest image that finished building. The [`@RELEASE@`
-jobset](https://hydra.nixos.lv/jobset/badgeos/@RELEASE@) has everything else we build for the
-release, and the [`master` jobset](https://hydra.nixos.lv/jobset/badgeos/master) has the
-bleeding edge. Flash it the same way as one you built yourself, below.
+Each link grabs the newest image that finished building. [Every build of the
+release](https://cache.nixos.lv/downloads/@SERIES@) lists everything else we build for it, and [master's
+builds](https://cache.nixos.lv/downloads/badgeos) have the bleeding edge. Flash it the same
+way as one you built yourself, below.
 
 ## Build and flash the SD card image
 

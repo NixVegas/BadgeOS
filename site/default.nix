@@ -60,6 +60,8 @@ pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
   badgeVersion = version;
   # The release branch, @RELEASE@ in the guide: v<major>.<minor>, or master without a version.
   release = if version != null then "v${lib.versions.majorMinor version}" else "master";
+  # Its builds' series on cache.nixos.lv, @SERIES@ in the guide (see hydra/jobsets.nix).
+  series = if version != null then "badgeos-v${lib.versions.majorMinor version}" else "badgeos";
   inherit nixosLabel;
   optionsFile = "${options.optionsJSON}/share/doc/nixos/options.json";
   optionsPages = options.pages;
@@ -83,7 +85,7 @@ pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
       substituteInPlace src/index.md --replace-fail "<!-- @VERSION_NOTE@ -->" \
         "This manual is for BadgeOS $badgeVersion''${nixosLabel:+ on NixOS $nixosLabel}."
     fi
-    substituteInPlace src/getting-started.md --replace-fail "@RELEASE@" "$release"
+    substituteInPlace src/getting-started.md --replace-fail "@RELEASE@" "$release" --replace-fail "@SERIES@" "$series"
 
     # index.md and contributing.md are also the repository's README.md and CONTRIBUTING.md,
     # so their links start at the repository root.
