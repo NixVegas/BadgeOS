@@ -12,6 +12,10 @@ runCommand "nix-badge-stable-mac-test" { } ''
   $bin wlan0
   want=$(printf '%s\n' "link set dev wlan0 down" "link set dev wlan0 address 88:00:33:80:3e:91" "link set dev wlan0 up")
   [ "$(cat calls)" = "$want" ] || fail "the link calls"
+  rm calls
+  ${nix-badge-stable-mac.override { leaveDown = true; }}/bin/nix-badge-stable-mac wlan0
+  want=$(printf '%s\n' "link set dev wlan0 down" "link set dev wlan0 address 88:00:33:80:3e:91")
+  [ "$(cat calls)" = "$want" ] || fail "the on-demand variant raised the link"
   rc=0; $bin 2>/dev/null || rc=$?; [ $rc = 2 ] || fail "usage"
   touch $out
 ''

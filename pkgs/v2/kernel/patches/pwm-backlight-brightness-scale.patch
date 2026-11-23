@@ -1,0 +1,52 @@
+pwm-backlight: allow a level scale above the last brightness step
+
+Normalizing the last brightness step to full duty defeats the panel's duty cap.
+This BadgeOS-local property supplies the full-duty scale separately from the table.
+
+--- a/drivers/video/backlight/pwm_bl.c
++++ b/drivers/video/backlight/pwm_bl.c
+@@ -539,6 +539,18 @@
+ 			if (data->levels[i] > pb->scale)
+ 				pb->scale = data->levels[i];
+ 
++		if (of_property_present(pdev->dev.of_node, "brightness-levels-scale")) {
++			u32 scale;
++
++			ret = of_property_read_u32(pdev->dev.of_node, "brightness-levels-scale", &scale);
++			if (ret || !scale || scale < pb->scale) {
++				ret = dev_err_probe(&pdev->dev, -EINVAL,
++						    "invalid brightness-levels-scale\n");
++				goto err_alloc;
++			}
++			pb->scale = scale;
++		}
++
+ 		if (pwm_backlight_is_linear(data))
+ 			props.scale = BACKLIGHT_SCALE_LINEAR;
+ 		else
+--- a/Documentation/devicetree/bindings/leds/backlight/pwm-backlight.yaml
++++ b/Documentation/devicetree/bindings/leds/backlight/pwm-backlight.yaml
+@@ -42,6 +42,15 @@
+       Delay in ms between disabling the backlight using GPIO and setting PWM
+       value to 0.
+ 
++  brightness-levels-scale:
++    description:
++      Value representing 100 percent PWM duty cycle. Must be at least the
++      largest brightness-levels value. Defaults to the largest value when
++      absent. A larger scale limits the maximum duty cycle for backlights
++      that require a low interval on every PWM period.
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 1
++
+   num-interpolated-steps:
+     description:
+       Number of interpolated steps between each value of brightness-levels
+@@ -50,6 +59,7 @@
+     $ref: /schemas/types.yaml#/definitions/uint32
+ 
+ dependencies:
++  brightness-levels-scale: [brightness-levels]
+   default-brightness-level: [brightness-levels]
+   num-interpolated-steps: [brightness-levels]
+ 

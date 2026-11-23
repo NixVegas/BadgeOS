@@ -8,8 +8,22 @@
   runCommand,
   python3,
   sophgone,
+  # Release PWR_SEQ1/2 (PWR_GPIO3/4) from the RTC power sequencer, for a touchscreen's
+  # IRQ and reset.
+  touchPads ? false,
+  coreTransfer ? false,
 }:
 let
+  # A sophgone without the core transfer does not take the argument.
+  transfer =
+    if coreTransfer && !(lib.functionArgs sophgone.lib.fipPolyglot ? coreTransfer) then
+      throw ''
+        sg2k-fips-licheerv-nano: coreTransfer needs a sophgone.lib.fipPolyglot that takes it.
+        Bump the sophgone input to a revision with the core transfer, or until then pass
+        --override-input sophgone path:/path/to/sophgone.''
+    else
+      lib.optionalAttrs coreTransfer { inherit coreTransfer; };
+
   fsblFor =
     {
       core,
@@ -40,7 +54,10 @@ let
       (old: {
         pname = "uboot-licheerv-nano-${core}";
         postPatch = old.postPatch + ''
-          cp -f ${./cvi_board_init.c} board/cvitek/cvi_board_init.c
+          cp -f ${./cvi_board_init.c} board/cvitek/cvi_board_init.c${lib.optionalString touchPads ''
+
+            cp -f ${./cvi_board_init.c} board/cvitek/licheerv-nano-board-init.c
+            cp -f ${./cvi_board_init-touch-pads.c} board/cvitek/cvi_board_init.c''}
           cp -f ${./uboot-memmap.h} include/cvi_board_memmap.h
           cp -f ${controlDts.${core}} arch/${core}/dts/cv181x_cv181xasic.dts
           patch -p1 --fuzz=0 < ${./btnsel.patch}
@@ -124,17 +141,20 @@ let
         core,
         slot ? "primary",
         secureBoot,
+        coreTransfer ? false,
       }:
       assert !secureBoot;
-      fsblFor { inherit core slot; };
+      (fsblFor { inherit core slot; }).override (
+        lib.optionalAttrs coreTransfer { inherit coreTransfer; }
+      );
   };
   polyglotPieces = {
-    merge-bl2 = bl2;
+    merge-bl2 = bl2.override transfer;
     fsbl = fsbl.arm;
     bl31-blob = bl31;
     inherit opensbi;
-    uboot-arm = uboot.arm;
-    uboot-riscv = uboot.riscv;
+    uboot-arm = uboot.arm.override transfer;
+    uboot-riscv = uboot.riscv.override transfer;
   };
   fipPolyglot =
     (callPackage sophgone.lib.fipPolyglot {
@@ -152,5 +172,5 @@ in
 {
   fipArm = fipFor "arm" bl31;
   fipRiscv = fipFor "riscv" opensbi;
-  inherit fipPolyglot;
+  fipPolyglot = fipPolyglot.override transfer;
 }

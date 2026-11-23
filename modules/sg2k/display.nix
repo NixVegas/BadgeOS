@@ -9,6 +9,7 @@
 let
   soph-display = pkgs.soph-display.override {
     kernel = config.boot.kernelPackages.kernel;
+    withCamera = config.hardware.sg2k.camera.enable;
   };
 
   soph-vpu-firmware = pkgs.soph-vpu-firmware;
@@ -96,6 +97,21 @@ in
       default = false;
       description = ''
         Include the codec island in the boot-time load. Requires autoLoad.
+      '';
+    };
+
+    rotation = lib.mkOption {
+      type = lib.types.enum [
+        0
+        90
+        270
+      ];
+      # The DSI panel sets 90.
+      default = 0;
+      description = ''
+        Rotate packed RGB scanout clockwise in the SoC rotator. Quarter turns
+        expose a mode with swapped dimensions and require padded packed RGB buffers.
+        Requires the DSI panel. A timed-out rotation disables rotation until reboot.
       '';
     };
 

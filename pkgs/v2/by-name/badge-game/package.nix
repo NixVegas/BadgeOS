@@ -4,10 +4,12 @@
   lib,
   writeShellApplication,
   coreutils,
+  jq,
   # For swaymsg. The badge passes its session's sway, config.programs.sway.package.
   sway,
   # The mode the output goes back to: badge.graphics.outputMode.
   outputMode ? "1280x720",
+  outputName ? "HDMI-A-1",
 }:
 writeShellApplication {
   name = "badge-game";
@@ -15,10 +17,13 @@ writeShellApplication {
   runtimeInputs = [
     coreutils
     sway
-  ];
+  ]
+  # To read the mode a native-mode output is in.
+  ++ lib.optional (outputMode == "native") jq;
 
   runtimeEnv = {
     BADGE_OUTPUT_MODE = outputMode;
+    BADGE_OUTPUT_NAME = outputName;
   };
 
   text = builtins.readFile ./badge-game.sh;

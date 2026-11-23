@@ -25,6 +25,8 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/security.h>
 #include <linux/uaccess.h>
@@ -79,10 +81,8 @@ MODULE_PARM_DESC(used_bytes,
  * the buffer's stale lines; a reader that does not bracket sees stale data.
  * Off, every mmap is write-combined. Applies to mmaps made after the change.
  *
- * On riscv the shim's device reads DMA-coherent: it has no DT node, so the
- * SoC's dma-noncoherent bus never configures it. Then every mapping is
- * cacheable and SYNC maintains nothing (inferred from the DMA code, not seen
- * on the C906), a known gap; cached_mmap is refused.
+ * On RISC-V the shim inherits /soc's DMA configuration before allocating.
+ * cached_mmap remains off by default and is refused on DMA-coherent devices.
  */
 static bool cached_mmap = IS_ENABLED(CONFIG_ARM64);
 static bool ion_coherent;	/* the shim's device, as the DMA API sees it */
@@ -475,6 +475,14 @@ static int __init soph_ion_init(void)
 	if (IS_ERR(ion_pdev))
 		return PTR_ERR(ion_pdev);
 
+	if (IS_ENABLED(CONFIG_RISCV)) {
+		struct device_node *np = of_find_node_by_path("/soc");
+
+		ret = of_dma_configure(&ion_pdev->dev, np, true);
+		of_node_put(np);
+		if (ret)
+			goto err_pdev;
+	}
 	ret = dma_coerce_mask_and_coherent(&ion_pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
 		goto err_pdev;

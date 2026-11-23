@@ -4,6 +4,7 @@
   fetchgit,
   kernel,
   soph-ion-uapi,
+  withCamera ? false,
 }:
 
 # The Sophgo vendor display stack (Linux 5.10), built out of tree for the mainline kernel.
@@ -33,6 +34,13 @@ stdenv.mkDerivation {
     ./patches/vcodec-reset-on-probe.patch
     ./patches/scaler-dsi-set-eot.patch
     ./patches/vo-clk-disable-if-prepared.patch
+  ]
+  ++ lib.optionals withCamera [
+    ./patches/vi-keep-shared-clocks.patch
+    ./patches/sys-user-ion-nofd.patch
+    ./patches/vi-tuning-buffers-ion.patch
+    ./patches/vi-raw-dump-before-start.patch
+    ./patches/vi-irq-storm-guard.patch
   ];
 
   postPatch = ''
@@ -204,6 +212,14 @@ stdenv.mkDerivation {
       's|\bI2C_M_WRSTOP\b|I2C_M_STOP|g'
 
     set -o pipefail
+  ''
+  + lib.optionalString withCamera ''
+    # Use the clock framework for the receiver's 24 MHz sensor clock.
+    echo "ccflags-y += -DCONFIG_COMMON_CLK_CVITEK" >> interdrv/cif/Makefile
+
+    # Idle camera workers must not count toward load or hung-task detection.
+    test "$(grep -c 'wait_event(vdev->vi_th\[th_id\]\.wq,' interdrv/vi/chip/cv181x/vi.c)" = 4
+    sed -i 's|wait_event(vdev->vi_th\[th_id\]\.wq,|wait_event_idle(vdev->vi_th[th_id].wq,|' interdrv/vi/chip/cv181x/vi.c
   '';
 
   buildPhase = ''

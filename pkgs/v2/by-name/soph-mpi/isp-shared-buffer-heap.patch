@@ -1,0 +1,74 @@
+isp: keep the ISP shared buffer in process memory
+
+The ISP context, with its pthread mutexes and condition variables, lives in
+a shared buffer allocated from ION so that the RTOS ISP on the little core can
+read it. On the badge the little core runs no ISP, and a writable ION buffer is
+mapped through /dev/soph-ion as non-cacheable memory, where the atomic
+instructions behind pthread_mutex_lock() fault: the ISP thread crashes on its
+first frame event.
+
+Allocate the buffer from the heap when not built for the RTOS, and drop its
+cache maintenance, which only mattered for the other core.
+
+--- a/modules/isp/cv181x/isp/src/isp_mgr_buf.c
++++ b/modules/isp/cv181x/isp/src/isp_mgr_buf.c
+@@ -125,14 +125,20 @@
+ 	memset(ion_name, 0, sizeof(ion_name));
+ 	snprintf(ion_name, sizeof(ion_name), "%s_%d", ISP_SHARED_BUFFER_NAME, ViPipe);
+ 
+-	if (CVI_SYS_IonAlloc_Cached(&(runtime->paddr), &(runtime->vaddr),
+-		ion_name, runtime->len) < 0) {
+-		printf("ISP Vipipe(%d) Allocate %s failed\n", ViPipe, ion_name);
+-		ret = CVI_FAILURE;
+-	} else {
+-		printf("ISP Vipipe(%d) Allocate pa(%#llx) va(0x%p) size(%d)\n",
+-			ViPipe, runtime->paddr, runtime->vaddr, runtime->len);
++	/*
++	 * Only the RTOS ISP on the little core reads this buffer by physical
++	 * address; without it, the buffer is ordinary cached process memory. That
++	 * matters: the context in it holds pthread mutexes, and atomics fault on
++	 * the non-cacheable mapping a writable ION buffer gets here.
++	 */
++	(void)ion_name;
++	runtime->vaddr = aligned_alloc(4096, (runtime->len + 4095) & ~4095u);
++	if (runtime->vaddr == CVI_NULL) {
++		printf("ISP Vipipe(%d) Allocate shared buffer failed\n", ViPipe);
++		return CVI_FAILURE;
+ 	}
++	/* Non-zero marks the buffer allocated; it is never used as an address. */
++	runtime->paddr = (CVI_U64)(uintptr_t)runtime->vaddr;
+ 
+ 	memset(runtime->vaddr, 0, runtime->len);
+ 
+@@ -169,12 +175,7 @@
+ 	}
+ 
+ #ifndef ARCH_RTOS_CV181X
+-	printf("ISP Vipipe(%d) Free pa(%#llx) va(0x%p)\n", ViPipe,
+-		runtime->paddr, runtime->vaddr);
+-	if (CVI_SYS_IonFree(runtime->paddr, runtime->vaddr) < 0) {
+-		ISP_LOG_ERR("Vipipe(%d) destroy shared buffer failed\n", ViPipe);
+-		ret = CVI_FAILURE;
+-	}
++	free(runtime->vaddr);
+ #endif
+ 
+ 	runtime->paddr = 0x0;
+@@ -489,7 +490,7 @@
+ 	struct isp_mgr_buf_runtime *runtime = _get_mgr_buf_runtime(ViPipe);
+ 
+ #ifndef ARCH_RTOS_CV181X
+-	ret = CVI_SYS_IonInvalidateCache(runtime->paddr, runtime->vaddr, runtime->len);
++	(void)runtime;	/* process memory: nothing else shares it */
+ #else
+ 	inv_dcache_range(runtime->paddr, runtime->len);
+ #endif
+@@ -502,7 +503,7 @@
+ 	struct isp_mgr_buf_runtime *runtime = _get_mgr_buf_runtime(ViPipe);
+ 
+ #ifndef ARCH_RTOS_CV181X
+-	ret = CVI_SYS_IonFlushCache(runtime->paddr, runtime->vaddr, runtime->len);
++	(void)runtime;	/* process memory: nothing else shares it */
+ #else
+ 	flush_dcache_range(runtime->paddr, runtime->len);
+ #endif

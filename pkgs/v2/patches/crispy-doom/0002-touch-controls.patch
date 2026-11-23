@@ -1,0 +1,255 @@
+i_video: add touch controls
+
+With BADGE_PANEL_TOUCH=1, fingers drive panel_touch.h, and its output
+reaches the game as the events a joystick, a mouse and a keyboard would
+send: the stick moves, the look area turns, the buttons fire, use, change
+weapon and open the menu, and in the menu the stick and buttons are the
+arrow and select keys. The controls are drawn over each frame, and a
+close request quits at once. The window has no minimum size, so on an
+output smaller than the frame the frame is scaled down to fit rather
+than cut off. Without the variable nothing changes.
+
+---
+diff --git a/src/i_video.c b/src/i_video.c
+--- a/src/i_video.c
++++ b/src/i_video.c
+@@ -60,6 +60,8 @@
+ static SDL_Window *screen;
+ static SDL_Renderer *renderer;
+ 
++#include "doom_touch.h"
++
+ // Window title
+ 
+ static const char *window_title = "";
+@@ -407,6 +409,7 @@
+ 
+         case SDL_WINDOWEVENT_FOCUS_LOST:
+             window_focused = false;
++            if (panel_touch) PanelTouchRelease();
+             break;
+ 
+         // We want to save the user's preferred monitor to use for running the
+@@ -475,6 +478,11 @@
+     {
+         switch (sdlevent.type)
+         {
++            case SDL_FINGERDOWN:
++            case SDL_FINGERUP:
++            case SDL_FINGERMOTION:
++                if (panel_touch) PanelTouchEvent(&sdlevent.tfinger);
++                break;
+             case SDL_KEYDOWN:
+                 if (ToggleFullScreenKeyShortcut(&sdlevent.key.keysym))
+                 {
+@@ -497,6 +505,7 @@
+                 break;
+ 
+             case SDL_QUIT:
++                if (panel_touch) I_Quit();
+                 if (screensaver_mode)
+                 {
+                     I_Quit();
+@@ -543,6 +552,7 @@
+     {
+         I_UpdateJoystick();
+     }
++    if (panel_touch) PanelTouchFrame();
+ }
+ 
+ void I_UpdateFracTic(void) // [crispy]
+@@ -920,6 +930,7 @@
+ 
+     // Draw!
+ 
++    if (panel_touch) PanelTouchDraw(renderer);
+     SDL_RenderPresent(renderer);
+ 
+     if (crispy->uncapped && !singletics)
+@@ -1526,7 +1537,7 @@
+             SDL_GetError());
+         }
+ 
+-        SDL_SetWindowMinimumSize(screen, SCREENWIDTH, actualheight);
++        if (!panel_touch) SDL_SetWindowMinimumSize(screen, SCREENWIDTH, actualheight);
+ 
+         I_InitWindowTitle();
+         I_InitWindowIcon();
+@@ -1785,6 +1796,8 @@
+ 
+ void I_InitGraphics(void)
+ {
++    panel_touch = pt_enabled();
++    if (panel_touch) SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+     SDL_Event dummy;
+ #ifndef CRISPY_TRUECOLOR
+     byte *doompal;
+diff --git a/src/i_video.h b/src/i_video.h
+--- a/src/i_video.h
++++ b/src/i_video.h
+@@ -53,6 +53,9 @@
+ // determines the hardware configuration
+ // and sets up the video mode
+ void I_InitGraphics (void);
++
++// Optional native menu state for the touch controls.
++void I_PanelTouchMenu(const boolean *active);
+ 
+ void I_GraphicsCheckCommandLine(void);
+ 
+diff --git a/src/doom/m_menu.c b/src/doom/m_menu.c
+--- a/src/doom/m_menu.c
++++ b/src/doom/m_menu.c
+@@ -3317,6 +3317,7 @@
+ //
+ void M_Init (void)
+ {
++    I_PanelTouchMenu(&menuactive);
+     currentMenu = &MainDef;
+     menuactive = 0;
+     itemOn = currentMenu->lastOn;
+diff --git a/src/doom_touch.h b/src/doom_touch.h
+new file mode 100644
+index 0000000..c88a1b9
+--- /dev/null
++++ b/src/doom_touch.h
+@@ -0,0 +1,139 @@
++#include "../panel_touch.h"
++
++static struct panel_touch panel_input;
++static boolean panel_touch;
++static const boolean *panel_menu;
++static unsigned panel_keys;
++static boolean panel_fire;
++static int panel_forward, panel_strafe;
++static float panel_turn;
++static Uint32 panel_repeat;
++
++void I_PanelTouchMenu(const boolean *active)
++{
++    panel_menu = active;
++}
++
++static void PanelKey(unsigned index, boolean down)
++{
++    static const SDL_Scancode scans[] = {SDL_SCANCODE_SPACE, SDL_SCANCODE_ESCAPE,
++        SDL_SCANCODE_RETURN, SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT};
++    static const SDL_Keycode keys[] = {SDLK_SPACE, SDLK_ESCAPE, SDLK_RETURN,
++        SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT};
++    SDL_Event event;
++    SDL_zero(event);
++    event.type = down ? SDL_KEYDOWN : SDL_KEYUP;
++    event.key.state = down ? SDL_PRESSED : SDL_RELEASED;
++    event.key.keysym.scancode = scans[index];
++    event.key.keysym.sym = keys[index];
++    I_HandleKeyboardEvent(&event);
++}
++
++static void PanelKeys(unsigned keys)
++{
++    for (unsigned i = 0; i < 7; i++)
++        if ((keys ^ panel_keys) & (1u << i)) PanelKey(i, (keys & (1u << i)) != 0);
++    if ((keys ^ panel_keys) & 0x78u) panel_repeat = SDL_GetTicks() + 350;
++    panel_keys = keys;
++}
++
++static unsigned PanelMapKeys(struct pt_output o, unsigned buttons, boolean menu)
++{
++    unsigned keys = (buttons & (1u << PT_USE) ? 1u : 0) |
++                    (buttons & (1u << PT_MENU) ? 2u : 0) |
++                    (buttons & (1u << PT_OK) ? 4u : 0);
++    if (menu) {
++        if (buttons & (1u << PT_FIRE)) keys |= 4u;
++        if (o.forward > .35f) keys |= 1u << 3;
++        if (o.forward < -.35f) keys |= 1u << 4;
++        if (o.strafe < -.35f) keys |= 1u << 5;
++        if (o.strafe > .35f) keys |= 1u << 6;
++    }
++    return keys;
++}
++
++static void PanelTouchFrame(void)
++{
++    struct pt_output o = pt_take(&panel_input);
++    boolean menu = panel_menu && *panel_menu;
++    int forward = menu ? 0 : (int)(-o.forward * 65536);
++    int strafe = menu ? 0 : (int)(o.strafe * 65536);
++    if (forward != panel_forward || strafe != panel_strafe) {
++        event_t event = {.type=ev_joystick, .data3=forward, .data4=strafe};
++        D_PostEvent(&event);
++        panel_forward = forward;
++        panel_strafe = strafe;
++    }
++    /* Preserve a quick down/up pair even if both arrive within one game tick. */
++    PanelKeys(PanelMapKeys(o, o.held | o.pressed, menu));
++    PanelKeys(PanelMapKeys(o, o.held, menu));
++    if (menu && (panel_keys & 0x78u) && SDL_TICKS_PASSED(SDL_GetTicks(), panel_repeat)) {
++        for (unsigned i = 3; i < 7; i++) if (panel_keys & (1u << i)) PanelKey(i, true);
++        panel_repeat = SDL_GetTicks() + 150;
++    }
++    boolean fire = !menu && (o.held & (1u << PT_FIRE));
++    if (fire != panel_fire) {
++        SDL_Event event;
++        SDL_zero(event);
++        event.type = fire ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
++        event.button.button = SDL_BUTTON_LEFT;
++        I_HandleMouseEvent(&event);
++        panel_fire = fire;
++    }
++    panel_turn = menu ? 0 : panel_turn + o.look_x;
++    if ((int)panel_turn != 0) {
++        event_t event = {.type=ev_mouse, .data1=fire, .data2=(int)panel_turn};
++        panel_turn -= event.data2;
++        D_PostEvent(&event);
++    }
++    if (o.pressed & (1u << PT_GUN)) {
++        SDL_Event event;
++        SDL_zero(event);
++        event.type = SDL_MOUSEWHEEL;
++        event.wheel.y = 1;
++        I_HandleMouseEvent(&event);
++    }
++}
++
++static void PanelTouchRelease(void)
++{
++    panel_turn = 0;
++    pt_release_all(&panel_input);
++    PanelTouchFrame();
++}
++
++static void PanelTouchEvent(const SDL_TouchFingerEvent *event)
++{
++    pt_event(&panel_input, event->type == SDL_FINGERDOWN ? PT_DOWN :
++             event->type == SDL_FINGERUP ? PT_UP : PT_MOTION,
++             event->fingerId, event->x, event->y);
++    PanelTouchFrame();
++}
++
++static void PanelFill(void *context, int x, int y, int width, int height, unsigned shade)
++{
++    SDL_Renderer *renderer = context;
++    SDL_Rect rect = {x, y, width, height};
++    SDL_SetRenderDrawColor(renderer, shade, shade, shade, 255);
++    SDL_RenderFillRect(renderer, &rect);
++}
++
++static void PanelTouchDraw(SDL_Renderer *renderer)
++{
++    int width, height, logical_width, logical_height;
++    Uint8 r, g, b, a;
++    SDL_BlendMode blend;
++    /* Draw in window pixels: scaled down from the game's logical size, lines drop out. */
++    SDL_RenderGetLogicalSize(renderer, &logical_width, &logical_height);
++    SDL_RenderSetLogicalSize(renderer, 0, 0);
++    SDL_GetRendererOutputSize(renderer, &width, &height);
++    pt_resize(&panel_input, width, height);
++    SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
++    SDL_GetRenderDrawBlendMode(renderer, &blend);
++    /* SDL's software blended fills do not support 24-bit window surfaces. */
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
++    pt_draw(&panel_input, PanelFill, renderer, "USE");
++    SDL_SetRenderDrawBlendMode(renderer, blend);
++    SDL_SetRenderDrawColor(renderer, r, g, b, a);
++    SDL_RenderSetLogicalSize(renderer, logical_width, logical_height);
++}

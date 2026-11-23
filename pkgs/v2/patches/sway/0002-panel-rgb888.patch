@@ -1,0 +1,32 @@
+config/output: prefer packed RGB888 on the panel
+
+queue_output_config() asks for XRGB8888 first, and search_render_format()
+tries the 32bpp formats before RGB888. A rotated panel's rotator moves
+every byte of each frame, and an RGB888 buffer is a quarter smaller than
+an XRGB8888 one. Ask for RGB888 first, and try RGB888 and BGR888 before
+the 32bpp formats.
+
+---
+--- a/sway/config/output.c
++++ b/sway/config/output.c
+@@ -552,7 +552,7 @@ static void queue_output_config(struct output_config *oc,
+ 	} else if (render_bit_depth == RENDER_BIT_DEPTH_6) {
+ 		wlr_output_state_set_render_format(pending, DRM_FORMAT_RGB565);
+ 	} else {
+-		wlr_output_state_set_render_format(pending, DRM_FORMAT_XRGB8888);
++		wlr_output_state_set_render_format(pending, DRM_FORMAT_RGB888);
+ 	}
+ 
+ 	bool hdr = oc && oc->hdr == 1;
+@@ -901,9 +901,9 @@ static bool search_render_format(struct search_context *ctx, size_t output_idx)
+ 		DRM_FORMAT_XRGB2101010,
+ 		DRM_FORMAT_XBGR2101010,
++		DRM_FORMAT_RGB888,
++		DRM_FORMAT_BGR888,
+ 		DRM_FORMAT_XRGB8888,
+ 		DRM_FORMAT_ARGB8888,
+-		DRM_FORMAT_RGB888,
+-		DRM_FORMAT_BGR888,
+ 		DRM_FORMAT_RGB565,
+ 		DRM_FORMAT_INVALID,
+ 	};

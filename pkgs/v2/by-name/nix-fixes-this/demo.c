@@ -43,7 +43,7 @@
 #ifndef H
 #define H 720
 #endif
-#define US (H / 360)              /* UI/font scale unit: 1 at 360p, 2 at 720p */
+#define US (H < 360 ? 1 : H / 360) /* UI/font scale unit: 1 at 360p, 2 at 720p */
 /* 48 kHz: the badge's only audio sink is the LT8912B HDMI I2S DIT (hw:0,0, which
  * PipeWire owns and ALSA's default routes to), fixed at 48000 S16_LE. Matching
  * it here means the chiptune hits HDMI audio with no resample. */
@@ -445,7 +445,7 @@ static void scene_plasma_title(double mt) {
 /* Rotozoom draws in strips this wide, so the texels one row of a strip reads
    are still cached when the next row reads their neighbours. */
 #define ROTO_STRIP 128
-_Static_assert(W % ROTO_STRIP == 0 && ROTO_STRIP % 4 == 0, "rotozoom draws whole strips, four pixels per step");
+_Static_assert(W % 4 == 0 && ROTO_STRIP % 4 == 0, "rotozoom draws four pixels per step");
 
 /* n pixels of one rotozoom row from 16.16 texture coordinates (u, v),
    stepping (du, dv) per pixel, wrapping mod 2^32. Four texels per step, all
@@ -479,7 +479,8 @@ static void scene_rotozoom(double mt) {
             /* 16.16 texture coordinates of pixel (x0, y) */
             uint32_t u = (uint32_t)((x0 - W / 2) * (int64_t)cs - (int64_t)(y - H / 2) * sn) + (uint32_t)offx;
             uint32_t v = (uint32_t)((x0 - W / 2) * (int64_t)sn + (int64_t)(y - H / 2) * cs) + (uint32_t)offy;
-            roto_row(&fb[y * W + x0], ROTO_STRIP, u, v, (uint32_t)cs, (uint32_t)sn);
+            roto_row(&fb[y * W + x0], W - x0 < ROTO_STRIP ? W - x0 : ROTO_STRIP,
+                     u, v, (uint32_t)cs, (uint32_t)sn);
         }
     const char *s = "ROTOZOOMER";
     draw_text((W - text_w(2 * US, s)) / 2, (int)(H * 0.05f), 2 * US, s, rgb(255, 255, 255));
@@ -831,7 +832,6 @@ static void scene_torus(double mt) {
    pixels sit a row apart, map to a few cache sets and evict each other. */
 #define VOX_COLS 16
 #define VOX_ROWS 160   /* depth rows of the frustum: 145 from z = 4 to zfar */
-_Static_assert(W % VOX_COLS == 0, "voxel draws whole passes");
 
 static void scene_voxel(double mt, float dt) {
     (void)dt;
@@ -859,6 +859,7 @@ static void scene_voxel(double mt, float dt) {
     }
     static uint32_t cols[VOX_COLS][H] LINE_ALIGNED;
     for (int x0 = 0; x0 < W; x0 += VOX_COLS) {
+        int count = W - x0 < VOX_COLS ? W - x0 : VOX_COLS;
         int ybuf[VOX_COLS];
         for (int i = 0; i < VOX_COLS; i++) ybuf[i] = H;
         for (int k = 0; k < nr; k++) {
@@ -897,7 +898,7 @@ static void scene_voxel(double mt, float dt) {
            y * W must wrap, and that cost 2 ms per frame here */
         for (size_t y = 0; y < H; y++) {
             uint32_t *row = &fb[y * W + x0];
-            for (int i = 0; i < VOX_COLS; i++) row[i] = cols[i][y];
+            for (int i = 0; i < count; i++) row[i] = cols[i][y];
         }
     }
     const char *s = "VOXEL FLYBY";
@@ -1278,7 +1279,11 @@ int main(int argc, char **argv) {
 #endif
 
     /* Fullscreen with no mode set: desktop-sized, never a mode switch. */
+#ifdef NFT_WINDOWED
+    SDL_Window *win = SDL_CreateWindow("Nix Fixes This", W, H, SDL_WINDOW_RESIZABLE);
+#else
     SDL_Window *win = SDL_CreateWindow("Nix Fixes This", W, H, SDL_WINDOW_FULLSCREEN);
+#endif
     if (!win) { SDL_Log("CreateWindow: %s", SDL_GetError()); return 1; }
 
     /* Made by start_renderer when the window surface does not fit. */

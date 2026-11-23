@@ -17,7 +17,8 @@
  * Without them only the off-device modes exist (--stream-out, --bench).
  *
  * usage: coda-cube [options]
- *   --size 1280x720|640x368   picture size (default 1280x720)
+ *   --size WxH                picture size, multiples of 16 (default 1280x720)
+ *   --windowed                keep the desktop bar visible
  *   --part 4|8|16             partition size (default 4)
  *   --deblock                 loop filter on (QP 51, max offsets), free on HW
  *   --pages K                 rotated atlas pages (default 12)
@@ -40,7 +41,7 @@
  *                             the last one (wl_surface.frame; default), or as soon as a buffer
  *                             is free (release: frames past 60 per second are never shown, for
  *                             benchmarks of the whole pipeline)
- *   --user USER               with --zero-copy, run as root: open the decoder, /dev/soph-ion
+ *   --user USER               run as root: open the decoder, /dev/soph-ion
  *                             and soph_drm's colour parameters, then drop to USER (its groups,
  *                             gid and uid) before connecting to USER's compositor
  *   --dpb-extra N             N more frame buffers: adds N to the SPS max_num_ref_frames, which
@@ -111,6 +112,7 @@
 #endif
 #ifdef CODA_SDL
 #include <SDL3/SDL.h>
+#include <systemd/sd-daemon.h>
 #include <drm/drm.h>
 #include "present-dmabuf.h"
 #endif
@@ -125,6 +127,7 @@
 
 static int W = 1280, H = 720, WMB, HMB, PART = 4, T = 0, K = 12, B;
 static float DIST = 6.0f;
+static float touch_pitch, touch_yaw;
 static int NREF, REFPAGE[MAXREF], REFFACE[MAXREF], REFK[MAXREF];
 static int g_pcm_test;
 static int g_dpb_extra;   /* --dpb-extra: spare frame buffers, through max_num_ref_frames */
@@ -239,7 +242,7 @@ static int plane3(const float *sx, const float *sy, const float *v, float *p) {
 /* t: animation angle; mcr.c's frame f of nframes is t = (float)f / nframes * 6.2831853f */
 static void scene(float t, Frame *F) {
     float R[3][3];
-    rot(0.55f + 0.9f * sinf(t), t, 0.25f * t, R);
+    rot(0.55f + 0.9f * sinf(t) + touch_pitch, t + touch_yaw, 0.25f * t, R);
     const float dist = DIST;
     const float foc = 0.95f * H, cx = W * 0.5f, cy = H * 0.5f;
     const V3 L = {-0.45f, 0.62f, -0.64f};   /* towards the light, camera space */
@@ -2064,7 +2067,7 @@ static int vd_open(size_t bsz)
 		g_fd = -1;
 		return -1;
 	}
-	if (!g_zero_copy) {   /* zero-copy, no frame is read on the CPU */
+	if (!g_zero_copy && g_mapion < 0) {   /* zero-copy, no frame is read on the CPU */
 		g_mapion = open("/dev/soph-ion", O_RDWR | O_CLOEXEC);
 		if (g_mapion < 0) {
 			fprintf(stderr, "coda-cube: open /dev/soph-ion: %s (run as root)\n", strerror(errno));
@@ -2824,12 +2827,100 @@ static int convert_test(int iters)
 	return fail;
 }
 
+#ifdef CODA_SDL
+/* Touch: a drag turns the cube, a pinch zooms, a tap pauses, a long press resets. */
+static bool touch_down, touch_paused, touch_pinched;
+static float touch_distance;
+static Uint64 touch_started;
+static struct {
+	SDL_FingerID id;
+	bool down;
+	float x, y;
+} fingers[2];
+
+static float finger_span(void)
+{
+	return hypotf(fingers[1].x - fingers[0].x, fingers[1].y - fingers[0].y);
+}
+
+static void touch_pointer(int slot, Uint32 action, float x, float y, Uint64 timestamp)
+{
+	float dx = x - fingers[slot].x, dy = y - fingers[slot].y;
+	float span = finger_span();
+	fingers[slot].x = x;
+	fingers[slot].y = y;
+	if (action == SDL_EVENT_FINGER_DOWN) {
+		if (!touch_down) {
+			touch_started = timestamp;
+			touch_distance = 0;
+			touch_pinched = false;
+		}
+		fingers[slot].down = true;
+		if (fingers[0].down && fingers[1].down)
+			touch_pinched = true;
+	} else if (action == SDL_EVENT_FINGER_MOTION) {
+		if (fingers[0].down && fingers[1].down) {
+			float next = finger_span();
+			if (span > 1 && next > 1)
+				DIST = fminf(10.0f, fmaxf(3.2f, DIST * span / next));
+		} else if (!touch_pinched) {
+			touch_distance += fabsf(dx) + fabsf(dy);
+			touch_yaw += dx * 0.01f;
+			touch_pitch += dy * 0.01f;
+		}
+	} else {
+		fingers[slot].down = false;
+		if (action == SDL_EVENT_FINGER_UP && !touch_pinched && touch_distance < 6) {
+			Uint64 held = timestamp - touch_started;
+			if (held >= 700000000) {
+				DIST = 6.0f;
+				touch_pitch = touch_yaw = 0;
+			} else if (held < 350000000) {
+				touch_paused = !touch_paused;
+			}
+		}
+	}
+	touch_down = fingers[0].down || fingers[1].down;
+}
+
+static void touch_event(const SDL_Event *event)
+{
+	if (event->type == SDL_EVENT_FINGER_DOWN || event->type == SDL_EVENT_FINGER_MOTION ||
+	    event->type == SDL_EVENT_FINGER_UP || event->type == SDL_EVENT_FINGER_CANCELED) {
+		int slot;
+		for (slot = 0; slot < 2; slot++)
+			if (fingers[slot].down && fingers[slot].id == event->tfinger.fingerID)
+				break;
+		if (slot == 2 && event->type == SDL_EVENT_FINGER_DOWN)
+			for (slot = 0; slot < 2 && fingers[slot].down; slot++) {}
+		if (slot < 2) {
+			fingers[slot].id = event->tfinger.fingerID;
+			touch_pointer(slot, event->type, event->tfinger.x * W,
+				      event->tfinger.y * H, event->tfinger.timestamp);
+		}
+	}
+}
+
+/* The animation time to hold back: the cube stands still under a finger and while paused. */
+static double touch_hold(double now)
+{
+	static double last, held;
+
+	if (touch_down || touch_paused)
+		held += now - last;
+	last = now;
+	return held;
+}
+#else
+#define touch_hold(now) 0
+#endif
+
 /* ------------------------------------------------------------ main */
 int main(int argc, char **argv)
 {
 	int deblock = 0, headless = 0, ref_ss = 4, qp = -1, abo = -99, no_convert = 0, pipeline = 0, hw_every = 4, frames = 60, bench = 0;
 	int stats = getenv("CODA_STATS") && atoi(getenv("CODA_STATS")) > 0, destroy = 0, cvt_test = 0, mc_tests = 0, dmabuf = 0;
-	int show_cursor = 0, zero_copy = 0, dpb_extra = -1, pace_release = 0;
+	int windowed = 0, show_cursor = 0, zero_copy = 0, dpb_extra = -1, pace_release = 0;
 	const char *run_as = NULL;
 	long page_tests = 0;
 	double seconds = 0, period = 8, pose = -1;
@@ -2839,7 +2930,7 @@ int main(int argc, char **argv)
 	       O_STATS, O_HEADLESS, O_NOCONV, O_PIPE, O_HWEVERY, O_UNCACHED, O_CHN, O_DESTROY, O_STREAM, O_FRAMES,
 	       O_INFO, O_DUMPTEX, O_DUMPATLAS, O_BENCH, O_PCMTEST, O_CVTTEST, O_AA, O_QP, O_ABO, O_SMOOTH,
 	       O_POSE, O_CPUMODEL, O_EDGESOUT, O_REFOUT, O_REFSS, O_MCTEST, O_NONEON, O_PAGETEST, O_DMABUF, O_SHOWCURSOR,
-	       O_ZEROCOPY, O_DPBEXTRA, O_PACE, O_USER };
+	       O_ZEROCOPY, O_DPBEXTRA, O_PACE, O_USER, O_WINDOWED };
 	static const struct option opts[] = {
 		{"size", 1, 0, O_SIZE}, {"part", 1, 0, O_PART}, {"deblock", 0, 0, O_DEBLOCK}, {"pages", 1, 0, O_PAGES},
 		{"tex", 1, 0, O_TEX}, {"dist", 1, 0, O_DIST}, {"period", 1, 0, O_PERIOD}, {"atlas", 1, 0, O_ATLAS},
@@ -2853,7 +2944,8 @@ int main(int argc, char **argv)
 		{"pose", 1, 0, O_POSE}, {"cpu-model", 1, 0, O_CPUMODEL}, {"edges-out", 1, 0, O_EDGESOUT},
 		{"ref-out", 1, 0, O_REFOUT}, {"ref-ss", 1, 0, O_REFSS}, {"mc-test", 1, 0, O_MCTEST}, {"no-neon", 0, 0, O_NONEON}, {"page-test", 1, 0, O_PAGETEST},
 		{"dmabuf", 0, 0, O_DMABUF}, {"show-cursor", 0, 0, O_SHOWCURSOR}, {"zero-copy", 0, 0, O_ZEROCOPY},
-		{"dpb-extra", 1, 0, O_DPBEXTRA}, {"pace", 1, 0, O_PACE}, {"user", 1, 0, O_USER}, {0, 0, 0, 0}};
+		{"dpb-extra", 1, 0, O_DPBEXTRA}, {"pace", 1, 0, O_PACE}, {"user", 1, 0, O_USER},
+		{"windowed", 0, 0, O_WINDOWED}, {0, 0, 0, 0}};
 	int opt;
 	while ((opt = getopt_long(argc, argv, "", opts, NULL)) != -1) {
 		switch (opt) {
@@ -2915,6 +3007,7 @@ int main(int argc, char **argv)
 			if (pace_release < 0) die("--pace frame|release");
 			break;
 		case O_USER: run_as = optarg; break;
+		case O_WINDOWED: windowed = 1; break;
 		case O_NONEON:
 #if defined(__aarch64__)
 			g_neon = 0;
@@ -2926,8 +3019,8 @@ int main(int argc, char **argv)
 	setvbuf(stderr, NULL, _IOLBF, 0);
 	if (dmabuf && (headless || W != 1280 || H != 720))
 		die("--dmabuf, --zero-copy: 1280x720 in a window only");
-	if (run_as && !zero_copy)
-		die("--user: with --zero-copy only, the one route that opens /dev/soph-ion before the drop");
+	if (run_as && dmabuf && !zero_copy)
+		die("--user: use the software copy path or --zero-copy");
 	g_dmabuf = dmabuf;
 	g_zero_copy = zero_copy;
 	if (dpb_extra >= 0)
@@ -2969,9 +3062,15 @@ int main(int argc, char **argv)
 	g_abo = abo != -99 ? abo : deblock ? 6 : 0;
 	if (g_qp < 0 || g_qp > 51 || g_abo < -6 || g_abo > 6) die("--qp 0..51, --ab-offset -6..6");
 	g_need_edges = edges_out != NULL;
+	int tex_given = T;
 	if (!T) T = W >= 1280 ? 224 : W >= 640 ? 112 : 80;
 	WMB = W / 16; HMB = H / 16;
 	B = K == 1 ? T + 2 * G : 2 * (int)ceilf(T * 1.41421356f * 0.5f) + 2 * G;
+	/* Without --tex the texture shrinks until its atlas and the black patch fit a small picture. */
+	while (!tex_given && T > 1 && (3 * B > W || 2 * B > H || (3 * B > W - 16 && 2 * B > H - 16))) {
+		T--;
+		B = K == 1 ? T + 2 * G : 2 * (int)ceilf(T * 1.41421356f * 0.5f) + 2 * G;
+	}
 	for (int k = 0; k < K; k++) { CK[k] = cosf(6.2831853f * k / K); SK[k] = sinf(6.2831853f * k / K); }
 	if (3 * B > W || 2 * B > H) die("the atlas slots do not fit the picture: smaller --tex");
 	if (3 * B <= W - 16) { BLACKX = W - 12; BLACKY = H / 2; } else if (2 * B <= H - 16) { BLACKX = 8; BLACKY = 2 * B + 4; }
@@ -3136,7 +3235,7 @@ int main(int argc, char **argv)
 
 #ifndef CODA_HW
 	(void)headless; (void)no_convert; (void)pipeline; (void)hw_every; (void)seconds; (void)period; (void)stats;
-	(void)show_cursor; (void)run_as; (void)pace_release;
+	(void)windowed; (void)show_cursor; (void)run_as; (void)pace_release;
 	die("built without the decoder (CODA_HW): only --stream-out, --bench, --dump-*");
 #else
 	struct sigaction sa;
@@ -3153,10 +3252,20 @@ int main(int argc, char **argv)
 #ifdef CODA_SDL
 	SDL_Window *win = NULL;
 	struct dmabuf_presenter *pres = NULL;
+	int ready_notified = 0;
 	if (dmabuf && color_set())
 		return 1;
 	if (zero_copy && (zc_open() || vd_open_dev()))
 		return 1;
+	if (run_as && !zero_copy) {   /* the copy path reads frames through /dev/soph-ion */
+		g_mapion = open("/dev/soph-ion", O_RDWR | O_CLOEXEC);
+		if (g_mapion < 0) {
+			fprintf(stderr, "coda-cube: open /dev/soph-ion: %s (run as root)\n", strerror(errno));
+			return 1;
+		}
+		if (vd_open_dev())
+			return 1;
+	}
 	if (run_as && drop_to(run_as))
 		return 1;
 	if (!headless) {
@@ -3170,7 +3279,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "coda-cube: SDL_Init: %s\n", SDL_GetError());
 			return 1;
 		}
-		win = SDL_CreateWindow("coda-cube", 1280, 720, SDL_WINDOW_FULLSCREEN);
+		win = SDL_CreateWindow("coda-cube", W, H, windowed ? SDL_WINDOW_RESIZABLE : SDL_WINDOW_FULLSCREEN);
 		if (!win) {
 			fprintf(stderr, "coda-cube: SDL_CreateWindow: %s\n", SDL_GetError());
 			SDL_Quit();
@@ -3202,7 +3311,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "@window %dx%d %s pitch %d\n", s->w, s->h, SDL_GetPixelFormatName(s->format), s->pitch);
 	}
 #else
-	(void)show_cursor; (void)run_as; (void)pace_release;
+	(void)windowed; (void)show_cursor; (void)run_as; (void)pace_release;
 	if (!headless) die("built without SDL (CODA_SDL): use --headless");
 #endif
 
@@ -3281,7 +3390,7 @@ int main(int argc, char **argv)
 	long fnum = 0;
 	int dry = 0;
 	const double TWO_PI = 6.283185307179586;
-#define ANGLE(ts) (pose >= 0 ? (float)pose : (float)(fmod(((ts) - t_start) / period, 4.0) * TWO_PI))
+#define ANGLE(ts) (pose >= 0 ? (float)pose : (float)(fmod(((ts) - t_start - touch_hold(ts)) / period, 4.0) * TWO_PI))
 	if (pipeline) {
 		gen_frame(cur, ANGLE(now_s()), 0);
 		worker_submit(&wk, cur, 0, hw_every > 0);
@@ -3429,10 +3538,17 @@ int main(int argc, char **argv)
 				}
 			} else if (ok && !SDL_UpdateWindowSurface(win)) {
 				fprintf(stderr, "coda-cube: UpdateWindowSurface: %s\n", SDL_GetError());
+				ok = 0;   /* nothing was shown */
+			}
+			/* Type=notify: started once a picture is up */
+			if (ok && !g_stop && (!dmabuf || zc || slot >= 0) && !ready_notified) {
+				sd_notify(0, "READY=1");
+				ready_notified = 1;
 			}
 			SDL_Event ev;
 			while (SDL_PollEvent(&ev)) {
 				if (ev.type == SDL_EVENT_QUIT) g_stop = 1;
+				touch_event(&ev);
 				if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) g_stop = 1;
 			}
 			if (dmabuf) {

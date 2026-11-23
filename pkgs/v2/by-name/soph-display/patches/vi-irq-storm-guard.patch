@@ -1,0 +1,219 @@
+vi, cif: do not let a stuck interrupt take the board down
+
+Enabling the camera on this chip freezes the whole board within a second of
+the first complete frame: no console message, no reboot from panic=10, and the
+display keeps scanning out its last frame while nothing else runs again. That
+is what a stuck interrupt looks like on one CPU. The handler clears the ISP
+top event latch on entry and then ignores the two error events the hardware
+holds until the faulting block is reset (the DMA error branch is commented
+out), so an error of that kind is taken again as soon as the handler returns,
+forever.
+
+Report those two events and mask the one that was reported, and add a rate
+guard to both camera handlers that masks the line when it interrupts far
+above what a running sensor can produce. A stuck interrupt then leaves a
+message with the pipeline's error and DMA status in it, and the board stays
+up, instead of being lost with no evidence.
+
+---
+--- a/interdrv/vi/chip/cv181x/vi.c
++++ b/interdrv/vi/chip/cv181x/vi.c
+@@ -18,6 +18,8 @@
+ #include <vi_raw_dump.h>
+ #include <sys.h>
+ #include <cmdq.h>
++#include <linux/interrupt.h>
++#include <linux/sched/clock.h>
+ 
+ /* Physical addresses of the FSWDR report buffers, which come from ION. */
+ static CVI_U64 fswdr_rpt_phys[ISP_PRERAW_VIRT_MAX];
+@@ -2887,6 +2889,81 @@
+ 	}
+ }
+ 
++/*
++ * This chip has one CPU, and it takes this interrupt again as soon as the
++ * handler returns if a status bit stayed asserted. Nothing else runs after
++ * that: the display keeps scanning out its last frame, but the kernel is
++ * gone, with no message and no way to reboot. Two guards keep such a failure
++ * reportable. The first reports the error events the handler does not act on
++ * and masks the event it reported, since the hardware holds those until the
++ * block is reset. The second counts interrupts over a short window and masks
++ * the line when the rate is far above what a running sensor can produce.
++ */
++#define VI_IRQ_WINDOW_NS	100000000ULL
++
++static unsigned int vi_irq_rate_max = 2000;	/* per window; 30 fps needs ~20 */
++module_param(vi_irq_rate_max, uint, 0644);
++
++static u64 vi_irq_window_start;
++static unsigned int vi_irq_window_cnt;
++static bool vi_irq_masked;
++
++static void _vi_irq_report(struct cvi_vi_dev *vdev, const char *what, u32 event2)
++{
++	struct isp_ctx *ctx = &vdev->ctx;
++	uintptr_t isp_top = ctx->phys_regs[ISP_BLK_ID_ISPTOP];
++	struct _dma_dbg_i dma = ispblk_dma_dbg_info(ctx);
++	union REG_ISP_CSI_BDG_INTERRUPT_STATUS_0 c0;
++	union REG_ISP_CSI_BDG_INTERRUPT_STATUS_1 c1;
++
++	isp_csi_intr_status(ctx, ISP_PRERAW_A, &c0, &c1);
++
++	pr_err("vi: %s: event2=0x%08x error_sts=0x%08x blk_idle=0x%08x\n",
++		what, event2,
++		ISP_RD_REG(isp_top, REG_ISP_TOP_T, ERROR_STS),
++		ISP_RD_REG(isp_top, REG_ISP_TOP_T, BLK_IDLE));
++	pr_err("vi: wdma0 err=0x%08x idle=0x%08x, wdma1 err=0x%08x idle=0x%08x, rdma err=0x%08x idle=0x%08x\n",
++		dma.wdma_0_err_sts, dma.wdma_0_idle,
++		dma.wdma_1_err_sts, dma.wdma_1_idle,
++		dma.rdma_err_sts, dma.rdma_idle);
++	pr_err("vi: csibdg0 sts=0x%08x/0x%08x, fe sof=%u fe done=%u be done=%u post done=%u\n",
++		c0.raw, c1.raw,
++		vdev->pre_fe_sof_cnt[ISP_PRERAW_A][ISP_FE_CH0],
++		vdev->pre_fe_frm_num[ISP_PRERAW_A][ISP_FE_CH0],
++		vdev->pre_be_frm_num[ISP_PRERAW_A][ISP_BE_CH0],
++		vdev->postraw_frame_number[ISP_PRERAW_A]);
++}
++
++/* Stops the reported event from being taken again. */
++static void _vi_irq_mask_event(struct isp_ctx *ctx, bool dma_err, bool pchk_err,
++			       bool frame_err)
++{
++	uintptr_t isp_top = ctx->phys_regs[ISP_BLK_ID_ISPTOP];
++	union REG_ISP_TOP_INT_EVENT2_EN ev2_en;
++
++	ev2_en.raw = ISP_RD_REG(isp_top, REG_ISP_TOP_T, INT_EVENT2_EN);
++	if (dma_err)
++		ev2_en.bits.INT_DMA_ERR_ENABLE = 0;
++	if (pchk_err)
++		ev2_en.bits.PCHK_ERR_ENABLE = 0;
++	if (frame_err)
++		ev2_en.bits.FRAME_ERR_ENABLE = 0;
++	ISP_WR_REG(isp_top, REG_ISP_TOP_T, INT_EVENT2_EN, ev2_en.raw);
++}
++
++/* Lets a later streaming attempt take interrupts again. */
++static void vi_irq_guard_reset(struct cvi_vi_dev *vdev)
++{
++	vi_irq_window_start = 0;
++	vi_irq_window_cnt = 0;
++
++	if (vi_irq_masked) {
++		vi_irq_masked = false;
++		enable_irq(vdev->irq_num);
++		vi_pr(VI_WARN, "irq %d enabled again\n", vdev->irq_num);
++	}
++}
++
+ int vi_start_streaming(struct cvi_vi_dev *vdev)
+ {
+ 	struct cif_attr_s cif_attr;
+@@ -2898,6 +2975,8 @@
+ 
+ 	vi_pr(VI_DBG, "+\n");
+ 
++	vi_irq_guard_reset(vdev);
++
+ 	_vi_mempool_reset();
+ 
+ 	vi_tuning_buf_setup(ctx);
+@@ -8458,6 +8537,24 @@
+ 
+ 	isp_intr_status(ctx, &top_sts, &top_sts_1, &top_sts_2);
+ 
++	{
++		u64 now = sched_clock();
++
++		if (now - vi_irq_window_start > VI_IRQ_WINDOW_NS) {
++			vi_irq_window_start = now;
++			vi_irq_window_cnt = 0;
++		}
++
++		if (++vi_irq_window_cnt > vi_irq_rate_max) {
++			if (!vi_irq_masked) {
++				vi_irq_masked = true;
++				disable_irq_nosync(vdev->irq_num);
++				_vi_irq_report(vdev, "interrupt storm", top_sts_2.raw);
++			}
++			return;
++		}
++	}
++
+ 	if (!atomic_read(&vdev->isp_streamon))
+ 		return;
+ 
+@@ -8486,8 +8583,11 @@
+ 	isp_err_chk(vdev, ctx, cbdg_0_sts[0], cbdg_1_sts[0], cbdg_0_sts[1], cbdg_1_sts[1],
+ 		cbdg_0_sts[2], cbdg_1_sts[2]);
+ 
+-	//if (top_sts.bits.INT_DMA_ERR)
+-	//	vi_pr(VI_ERR, "DMA error\n");
++	if (top_sts_2.bits.INT_DMA_ERR || top_sts_2.bits.PCHK_ERR) {
++		_vi_irq_report(vdev, "pipeline error", top_sts_2.raw);
++		_vi_irq_mask_event(ctx, top_sts_2.bits.INT_DMA_ERR,
++				   top_sts_2.bits.PCHK_ERR, false);
++	}
+ 
+ 	_isp_cmdq_done_chk(vdev, top_sts_2.bits.CMDQ_INT);
+ 
+--- a/interdrv/cif/chip/cv181x/cif.c
++++ b/interdrv/cif/chip/cv181x/cif.c
+@@ -9,6 +9,7 @@
+ #include <linux/iommu.h>
+ #include <linux/irq.h>
+ #include <linux/reset.h>
++#include <linux/sched/clock.h>
+ #include <generated/compile.h>
+ #include <linux/io.h>
+ #include <linux/clk.h>
+@@ -2797,10 +2798,37 @@
+ 	return rc;
+ }
+ 
++/*
++ * Masks the line if the receiver ever interrupts at a rate no sensor can
++ * produce; see the same guard in the vi driver for why a storm is fatal here.
++ * One sensor runs at a time, so one window is enough.
++ */
++static unsigned int cif_irq_rate_max = 2000;
++module_param(cif_irq_rate_max, uint, 0644);
++
++static u64 cif_irq_window_start;
++static unsigned int cif_irq_window_cnt;
++static bool cif_irq_masked;
++
+ static irqreturn_t cif_isr(int irq, void *_link)
+ {
+ 	struct cvi_link *link = (struct cvi_link *)_link;
+ 	struct cif_ctx *ctx = &link->cif_ctx;
++	u64 now = sched_clock();
++
++	if (now - cif_irq_window_start > 100000000ULL) {
++		cif_irq_window_start = now;
++		cif_irq_window_cnt = 0;
++	}
++
++	if (++cif_irq_window_cnt > cif_irq_rate_max) {
++		if (!cif_irq_masked) {
++			cif_irq_masked = true;
++			disable_irq_nosync(irq);
++			dev_err(link->dev, "interrupt storm, masking irq %d\n", irq);
++		}
++		return IRQ_HANDLED;
++	}
+ 
+ 	if (cif_check_csi_int_sts(ctx, CIF_INT_STS_ECC_ERR_MASK))
+ 		link->sts_csi.errcnt_ecc++;
+
+--- a/interdrv/vi/chip/cv181x/vi.c
++++ b/interdrv/vi/chip/cv181x/vi.c
+@@ -3724,7 +3724,7 @@
+ 	//Get the buffer for postraw output buffer
+ 	b = _cvi_isp_next_buf(vdev, chn_num);
+ 	if (b == NULL) {
+-		vi_pr(VI_ERR, "fail\n");
++		pr_warn_ratelimited("vi: no postraw output buffer\n");
+ 		return;
+ 	}
+ 	vb2_buf = &b->buf;

@@ -1,0 +1,16 @@
+main: create the keyboard on the bottom layer
+
+The keyboard's surface is created on the overlay layer, whose exclusive
+zone a compositor places before the bottom layer's. A docked swaybar is
+on the bottom layer, so it moves above the keyboard each time the
+keyboard is shown.
+
+Create the keyboard on the bottom layer. The bar then keeps the screen
+edge and the keyboard takes its space above the bar.
+
+---
+--- a/main.c
++++ b/main.c
+@@ -61,1 +61,1 @@
+-static uint32_t layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
++static uint32_t layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM;

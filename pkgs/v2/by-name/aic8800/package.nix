@@ -10,6 +10,8 @@
   stock ? false,
   # Build the BT-over-SDIO half (hci0, through BlueZ).
   bluetooth ? false,
+  # Loading on first use may need reclaim for the large reserved TX buffer.
+  reclaimTxBuffer ? false,
 }:
 let
   # aic8800-firmware pins the same rev. A let binding, not a formal: callPackage
@@ -130,6 +132,9 @@ pkgs.stdenv.mkDerivation {
           substituteInPlace ${driverSubdir}/aic8800_bsp/Makefile \
             --replace-fail 'CONFIG_AMSDU_RX = y' 'CONFIG_AMSDU_RX = n'
         ''}
+  ''
+  + pkgs.lib.optionalString reclaimTxBuffer ''
+    patch -p1 --binary -i ${./aic8800-tx-buffer-reclaim.patch}
   '';
 
   makeFlags = [

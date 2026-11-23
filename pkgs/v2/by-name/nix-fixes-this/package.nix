@@ -5,6 +5,9 @@
   stdenv,
   callPackage,
   sdl3,
+  windowed ? false,
+  width ? 1280,
+  height ? 720,
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "nix-fixes-this";
@@ -16,6 +19,10 @@ stdenv.mkDerivation (finalAttrs: {
       ./demo.c
       ./font8x8_basic.h
     ];
+  };
+
+  env = lib.optionalAttrs windowed {
+    NIX_CFLAGS_COMPILE = "-DNFT_WINDOWED -DW=${toString width} -DH=${toString height}";
   };
 
   buildInputs = [ sdl3 ];
