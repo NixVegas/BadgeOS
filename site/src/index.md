@@ -79,7 +79,6 @@ badge, and this one needed to use them somehow.
 
 BadgeOS lives at [github.com/NixVegas/BadgeOS](https://github.com/NixVegas/BadgeOS)
 under the LGPL-3.0. The bootloader builds and our SG2000 mask ROM research are in
-[NixVegas/sophgone](https://github.com/NixVegas/sophgone), and the PCB is on
-[git.nixos.lv](https://git.nixos.lv/NixVegas/pcb) since it doesn't fit on GitHub
-anymore. Last year's ESP32-C6 badge has its own
+[NixVegas/sophgone](https://github.com/NixVegas/sophgone), and the PCB is at
+[NixVegas/pcb](https://github.com/NixVegas/pcb). Last year's ESP32-C6 badge has its own
 [README](https://github.com/NixVegas/BadgeOS/blob/master/v1.md).

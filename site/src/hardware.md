@@ -3,7 +3,7 @@
 ![The Nix Vegas badge on a lanyard, its LED snowflake lit](https://relive.nix.vegas/share/photo/6ZE3in8vcoko7EtG8PC2CkG7d3_eyc68VTgMnGrKVRYsaTh9L_3VlNxZseOKXC4wUc8/c0b11824-3348-4f01-b07d-90250e326d6c/preview)
 
 The reference designators (J6, S3 and so on) come from the [KiCad
-project](https://git.nixos.lv/NixVegas/pcb), and everything here matches the v2.0 board
+project](https://github.com/NixVegas/pcb), and everything here matches the v2.0 board
 that was fabricated (commit `07f6efc`; later commits only touch the silkscreen and the
 README).
 
