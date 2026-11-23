@@ -1,0 +1,30 @@
+session/worker: unlock the memory of an autologin worker
+
+The session worker keeps its memory locked so that a password it handles
+is never swapped out, and it lives as long as the session. An automatic
+login handles no password, yet its worker holds its PAM mappings locked
+for the whole session. Unlock them when the login does not authenticate;
+a worker that takes a password stays locked. A failed unlock is logged
+and the login goes on.
+
+---
+diff --git a/greetd/src/session/worker.rs b/greetd/src/session/worker.rs
+--- a/greetd/src/session/worker.rs
++++ b/greetd/src/session/worker.rs
+@@ -123,6 +123,16 @@ fn worker(sock: &UnixDatagram) -> Result<(), Error> {
+             msg => return Err(format!("expected InitiateLogin or Cancel, got: {:?}", msg).into()),
+         };
+ 
++    // Autologin supplies no password; let its idle PAM mappings be reclaimed.
++    // Keep password-authenticated workers locked.
++    if !authenticate {
++        unsafe {
++            if let Err(error) = nix::sys::mman::munlockall() {
++                eprintln!("greetd: unable to unlock autologin memory: {}", error);
++            }
++        }
++    }
++
+     let conv = Box::pin(SessionConv::new(sock));
+     let mut pam = PamSession::start(service, user, conv)?;
+ 

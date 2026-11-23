@@ -1,0 +1,35 @@
+hynitron_cstxxx: probe application firmware on the panel's CST340
+
+The panel's CST340 runs its firmware but does not answer the ROM handshake.
+With firmware_probe=1, keep the settle delay and check the application firmware.
+This is a BadgeOS-local patch, not for upstream.
+
+---
+--- a/drivers/input/touchscreen/hynitron_cstxxx.c
++++ b/drivers/input/touchscreen/hynitron_cstxxx.c
+@@ -22,6 +22,11 @@
+ #include <linux/module.h>
+ #include <linux/property.h>
+ #include <linux/unaligned.h>
++
++/* For a CST340 whose firmware does not answer the ROM handshake. */
++static bool firmware_probe;
++module_param(firmware_probe, bool, 0444);
++MODULE_PARM_DESC(firmware_probe, "Check the application firmware without entering the ROM loader");
+ 
+ /* Per chip data */
+ struct hynitron_ts_chip_data {
+@@ -442,7 +447,12 @@
+ 
+ 	hyn_reset_proc(client, 60);
+ 
+-	err = ts_data->chip->bootloader_enter(client);
++	if (firmware_probe) {
++		msleep(40);
++		err = 0;
++	} else {
++		err = ts_data->chip->bootloader_enter(client);
++	}
+ 	if (err < 0)
+ 		return err;
+ 

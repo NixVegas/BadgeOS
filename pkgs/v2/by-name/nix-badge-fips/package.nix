@@ -14,12 +14,26 @@ let
       # fitKeyCert) with the verified-boot chain on, else the plain one.
       secureUboot ? false,
       fitKeyCert ? null,
+      coreTransfer ? false,
     }:
     let
+      # A sophgone without the core transfer does not take the argument.
+      transfer =
+        if coreTransfer && !(lib.functionArgs sophgone.lib.fipPolyglot ? coreTransfer) then
+          throw ''
+            nix-badge-fips: coreTransfer needs a sophgone.lib.fipPolyglot that takes it. Bump
+            the sophgone input to a revision with the core transfer, or until then pass
+            --override-input sophgone path:/path/to/sophgone.''
+        else
+          lib.optionalAttrs coreTransfer { inherit coreTransfer; };
+
       # The one benign polyglot, reused as the sign base and the exploit's chainload target.
-      polyglot = callPackage sophgone.lib.fipPolyglot {
-        inherit secureUboot fitKeyCert;
-      };
+      polyglot = callPackage sophgone.lib.fipPolyglot (
+        {
+          inherit secureUboot fitKeyCert;
+        }
+        // transfer
+      );
 
       overflowBl2Polyglot = callPackage sophgone.lib.overflowBl2 { variant = "polyglot"; };
 

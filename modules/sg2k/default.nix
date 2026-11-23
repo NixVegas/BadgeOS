@@ -28,6 +28,7 @@
     ./oled.nix
     ./bootswap.nix
     ./display.nix
+    ./dsi-panel.nix
     ./graphics.nix
     ./games.nix
     ./desktop.nix

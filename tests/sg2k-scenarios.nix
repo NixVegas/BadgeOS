@@ -23,9 +23,41 @@ let
 
   has = needle: haystack: lib.hasInfix needle haystack;
   nameOf = p: p.pname or (lib.getName p);
+  nano.hardware.sg2k.board = lib.mkForce "licheerv-nano";
+  software.hardware.sg2k.coreSelect = {
+    enable = true;
+    backend = "software";
+  };
+  refused =
+    message: c:
+    lib.optional (
+      !lib.any (a: !a.assertion && has message a.message) c.assertions
+    ) "the unsupported configuration was accepted";
   citadelKey = "citadel.build.dc.nixos.lv-1:UZbkvFcWZr/VP7cvNPLRpcMTCvaYw7X5XQDzA+nPVxY=";
 in
 {
+  sg2k-software-core = scenario "sg2k-software-core" [ nano software ] (
+    c:
+    map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)
+    ++ lib.optional (!(c.systemd.services ? "badge-core-reboot@")) "no software core service"
+    ++ lib.optional (c.systemd.services ? nix-badge-bootswap) "the GPIO latch backend also runs"
+  );
+  sg2k-software-core-single = scenario "sg2k-software-core-single" [
+    nano
+    software
+    { hardware.sg2k.cores = lib.mkForce [ "riscv" ]; }
+  ] (refused "both core payloads");
+  sg2k-software-core-signed = scenario "sg2k-software-core-signed" [
+    nano
+    software
+    { hardware.sg2k.firmware.secureBoot = true; }
+  ] (refused "unsigned boot firmware");
+  sg2k-software-core-sd-path = scenario "sg2k-software-core-sd-path" [
+    nano
+    software
+    { hardware.sg2k.firmware.fipPath = "/boot/other.bin"; }
+  ] (refused "SD firmware at /boot/fip.bin");
+
   sg2k-no-emmc = scenario "sg2k-no-emmc" [ { hardware.sg2k.emmc.enable = false; } ] (
     config:
     let
