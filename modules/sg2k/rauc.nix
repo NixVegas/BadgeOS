@@ -12,6 +12,9 @@ let
   medium = if emmc then "0" else "1";
   keyring = pkgs.nix-badge-rauc-dev-keyring;
   envMirror = pkgs.nix-badge-env-mirror;
+  # udev can publish an environment's alias after multi-user.target (over a minute after
+  # its partition on the C906), so the mark-good about to write it waits for it first.
+  waitFor = dev: "${config.systemd.package}/bin/udevadm wait --timeout=180 ${dev}";
   postInstallHandler = pkgs.writeShellScript "nix-badge-rauc-post-install" ''
     ${lib.getExe envMirror} || echo "nix-badge: env mirror failed after the install" >&2
     exit 0
@@ -137,6 +140,7 @@ in
       unitConfig.ConditionKernelCommandLine = "rauc.external";
       serviceConfig = {
         Type = "oneshot";
+        ExecStartPre = waitFor "/dev/uboot1";
         ExecStart = lib.getExe markGoodSd;
       };
     };
@@ -150,6 +154,7 @@ in
       pkgs.util-linux
     ];
     systemd.services.rauc-mark-good.path = [ pkgs.ubootTools ];
+    systemd.services.rauc-mark-good.serviceConfig.ExecStartPre = waitFor "/dev/uboot${medium}";
     systemd.services.nix-badge-env-mirror = lib.mkIf emmc {
       description = "Mirror the eMMC U-Boot env";
       after = [

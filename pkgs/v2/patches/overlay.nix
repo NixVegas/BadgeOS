@@ -3,8 +3,16 @@
 #
 # withPixman: also patch pixman. false keeps a closure on nixpkgs' pixman, so it
 # does not rebuild everything that links pixman.
+#
+# withRgb888: also give sway the patch that prefers RGB888 render buffers, for the
+# rotated panel; it is not in sway's list because no other display wants it.
+#
+# withAutologinUnlock: also patch greetd to unlock the memory of its automatic login,
+# for the panel's desktop.
 {
   withPixman ? true,
+  withRgb888 ? false,
+  withAutologinUnlock ? false,
 }:
 final: prev:
 let
@@ -17,7 +25,9 @@ in
 {
   # sway-unwrapped calls wlroots_0_20.override, which keeps these patches.
   wlroots_0_20 = addPatches prev.wlroots_0_20 (import ./wlroots);
-  sway-unwrapped = addPatches prev.sway-unwrapped (import ./sway);
+  sway-unwrapped = addPatches prev.sway-unwrapped (
+    (import ./sway) ++ prev.lib.optional withRgb888 ./sway/0002-panel-rgb888.patch
+  );
 
   # On the badge, prev.sdl3 is already trimmed (overlays/graphics.nix); the patches
   # go on top of that. sdl2-compat runs on this sdl3, so SDL2 apps get them too.
@@ -33,4 +43,7 @@ in
 }
 // prev.lib.optionalAttrs withPixman {
   pixman = addPatches prev.pixman (import ./pixman);
+}
+// prev.lib.optionalAttrs withAutologinUnlock {
+  greetd = addPatches prev.greetd (import ./greetd);
 }
