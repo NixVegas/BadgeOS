@@ -51,6 +51,13 @@
  *   the full width itself. It takes XRGB8888 and ARGB8888 and blends on
  *   per-pixel alpha, see soph_gop_alpha_fill().
  *
+ * With rotation=90/270, the native mode is offered with swapped axes, and on
+ * a panel the same line at half the active size, which the CPU doubles in
+ * front of the rotation.
+ * The LDC rotates packed RGB bytes as Y400 into alternating driver-owned
+ * buffers. DISP reads those bytes as planar RGB; the DSI timing stays fixed.
+ * No vendor DWA module or color conversion is involved.
+ *
  * soph_pipe_check() holds each mode to its formats. A compositor that
  * test-commits its candidate formats, as wlroots does, lands on RGB888 at
  * 1280x720 and on XRGB8888 at 640x360 with no policy of its own. Its own
@@ -62,8 +69,11 @@
 #include <linux/dma-mapping.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
+#include <linux/property.h>
+#include <linux/iopoll.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_dma_helper.h>
@@ -83,6 +93,7 @@
 
 #include "scaler.h"
 #include <linux/cvi_comm_mipi_tx.h>
+#include "soph_rot.h"
 
 /* The GOP instance/layer/window the vendor fbdev uses, mirrored exactly.
  * cvifb drives SCL_GOP_DISP layer 1 overlay window 0; that combination is
@@ -286,14 +297,35 @@ static bool nomodeset;
 module_param(nomodeset, bool, 0444);
 MODULE_PARM_DESC(nomodeset, "register the DRM device but never touch the GOP");
 
+static unsigned int rotation;
+module_param(rotation, uint, 0444);
+MODULE_PARM_DESC(rotation, "clockwise output rotation in degrees (0, 90, 270)");
+
+/* What is on the DSI link, by device-tree compatible. */
+struct soph_profile {
+	const struct combo_dev_cfg_s *link;	/* NULL: keep the link as it is */
+	int connector_type;
+	bool bridge;
+	bool gop_mode;
+	bool sync_low;		/* force VS/HS active-low in the DISP */
+	bool limited_rgb;	/* rgb_limited applies */
+	u32 refresh;		/* Hz; the pixel clock cannot be read back */
+	u32 mode_flags;
+	u16 width, height;	/* 0: whatever the DISP is running */
+};
+
 struct soph_drm {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	struct drm_connector connector;
+	const struct soph_profile *profile;
 
 	/* The panel's own mode, which the video layer scans 1:1, and the
-	 * half-size mode the GOP's 2x scaler doubles; see soph_read_mode(). */
+	 * half-size mode, doubled by the GOP's 2x scaler on HDMI and by
+	 * soph_rot_double() on a rotated panel; see soph_read_mode(). */
 	struct drm_display_mode native_mode, gop_mode;
+	struct soph_rot *rot;
+	bool has_gop;
 	/* The video layer, not the GOP, carries the plane since the last
 	 * enable. */
 	bool video_layer;
@@ -347,6 +379,10 @@ struct soph_drm {
 	 * NV12 and the GOP as XRGB/ARGB8888, so nothing is converted, the
 	 * driver owns no pixel buffers, and a flip is a new scanout address
 	 * (plus format, pitches and input CSC when those change).
+	 *
+	 * With rotation the LDC first copies the framebuffer into the free one
+	 * of the driver's output buffers, and only a real frame start releases
+	 * the old output for reuse.
 	 *
 	 * A DISP register written with the shadow mask clear sits in the shadow
 	 * bank until the next frame start, which copies it into the working
@@ -418,6 +454,7 @@ static enum hrtimer_restart soph_vbl_fn(struct hrtimer *t)
 
 	spin_lock(&sd->flip_lock);
 	if (sclr_disp_frame_start_poll()) {
+		soph_rot_latched(sd->rot);
 		vblank = true;
 		sd->vbl_miss = 0;
 		sd->layer_refill = sd->layer_staged;
@@ -637,6 +674,12 @@ static void soph_video_layer(const struct soph_drm *sd,
 	bool nv12 = fb->format->format == DRM_FORMAT_NV12;
 
 	memset(l, 0, sizeof(*l));
+	if (sd->rot) {
+		l->fmt = SCL_FMT_RGB_PLANAR;
+		l->csc = SCL_CSC_NONE;
+		soph_rot_mem(sd->rot, &l->mem);
+		return;
+	}
 	l->fmt = nv12 ? SCL_FMT_NV12 : SCL_FMT_BGR_PACKED;
 	l->csc = nv12 ? soph_yuv_csc(state) : SCL_CSC_NONE;
 	l->mem.addr0 = drm_fb_dma_get_gem_addr(fb, state, 0);
@@ -659,6 +702,8 @@ static const char *soph_layer_fmt_name(enum sclr_format fmt)
 	switch (fmt) {
 	case SCL_FMT_BGR_PACKED:
 		return "RGB888";
+	case SCL_FMT_RGB_PLANAR:
+		return "planar RGB888";
 	case SCL_FMT_NV12:
 		return "NV12";
 	default:
@@ -755,12 +800,17 @@ static void soph_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct sclr_disp_cfg *cfg;
 	struct soph_layer layer;
 
-	sd->video_layer = soph_mode_is_native(sd, &cstate->mode);
+	sd->video_layer = sd->rot || soph_mode_is_native(sd, &cstate->mode);
 
 	if (nomodeset)
 		goto out;
 	if (!fb)
 		goto out;
+	/* update() prepared this commit before the CRTC enable. */
+	if (sd->rot && !soph_rot_mem(sd->rot, &layer.mem)) {
+		drm_err(&sd->drm, "initial rotation failed; no frame available for scanout\n");
+		goto out;
+	}
 
 	soph_read_working_bank();
 
@@ -850,7 +900,7 @@ static void soph_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	/* After the paths above, which leave the output CSC at identity or off. */
-	if (rgb_limited)
+	if (rgb_limited && sd->profile->limited_rgb)
 		sclr_disp_set_out_csc_matrix(&soph_rgb_limited_csc);
 
 	/*
@@ -860,6 +910,7 @@ static void soph_pipe_enable(struct drm_simple_display_pipe *pipe,
 	 */
 	sclr_disp_tgen_enable(true);
 	sclr_disp_reg_force_up();
+	soph_rot_latched(sd->rot);
 
 	/* Judge starvation afresh on this path; see soph_check_underrun(). */
 	sd->starving = false;
@@ -894,6 +945,7 @@ static void soph_pipe_disable(struct drm_simple_display_pipe *pipe)
 	sclr_disp_enable_window_bgcolor(true);
 	soph_video_park(sd);
 	sclr_disp_reg_force_up();
+	soph_rot_latched(sd->rot);
 	/*
 	 * tgen is deliberately left running here even though enable() turns it
 	 * on. A CRTC disable is often transient, a modeset, a DPMS blip, a
@@ -1042,9 +1094,11 @@ static void soph_pipe_update(struct drm_simple_display_pipe *pipe,
 	 * before they enable the CRTC (drm_atomic_helper_commit_tail), so this
 	 * runs ahead of the enable that switches paths.
 	 */
-	video_layer = soph_mode_is_native(sd, &crtc->state->mode);
+	video_layer = sd->rot || soph_mode_is_native(sd, &crtc->state->mode);
 
 	if (fb && !nomodeset) {
+		if (sd->rot && soph_rot_run(sd->rot, state))
+			goto event;
 		/* Finish the pixels before anything points at them. */
 		if (!video_layer)
 			soph_gop_alpha_fill(fb);
@@ -1056,6 +1110,7 @@ static void soph_pipe_update(struct drm_simple_display_pipe *pipe,
 		 * the poller completes the flip when it sees it.
 		 */
 		spin_lock_irqsave(&sd->flip_lock, flags);
+		soph_rot_stage(sd->rot);
 		if (video_layer)
 			soph_video_stage(sd, state);
 		else
@@ -1064,6 +1119,7 @@ static void soph_pipe_update(struct drm_simple_display_pipe *pipe,
 		spin_unlock_irqrestore(&sd->flip_lock, flags);
 	}
 
+event:
 	/* Complete the flip at the next vblank when vblanks are running, so
 	 * the compositor is paced; send it immediately otherwise, or it would
 	 * wait forever. */
@@ -1090,7 +1146,7 @@ soph_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 				   DRM_MODE_MATCH_FLAGS;
 
 	if (drm_mode_match(mode, &sd->native_mode, match) ||
-	    drm_mode_match(mode, &sd->gop_mode, match))
+	    (sd->has_gop && drm_mode_match(mode, &sd->gop_mode, match)))
 		return MODE_OK;
 	return MODE_BAD;
 }
@@ -1127,6 +1183,11 @@ static int soph_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!fb)
 		return 0;
 	format = fb->format->format;
+	if (sd->rot) {
+		if (fb->width != mode->hdisplay || fb->height != mode->vdisplay)
+			return -EINVAL;
+		return soph_rot_check(sd->rot, plane_state);
+	}
 
 	if (soph_mode_is_native(sd, mode)) {
 		if (format == DRM_FORMAT_RGB888 &&
@@ -1198,6 +1259,13 @@ static const uint32_t soph_formats[] = {
 	DRM_FORMAT_NV12,
 };
 
+/* With rotation: the packed RGB the LDC rotates, see soph_rot_check(). */
+static const uint32_t soph_rot_formats[] = {
+	DRM_FORMAT_RGB888,
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_ARGB8888,
+};
+
 /* connector */
 
 static int soph_conn_get_modes(struct drm_connector *connector)
@@ -1211,6 +1279,8 @@ static int soph_conn_get_modes(struct drm_connector *connector)
 	int i, n = 0;
 
 	for (i = 0; i < ARRAY_SIZE(modes); i++) {
+		if (modes[i] == &sd->gop_mode && !sd->has_gop)
+			continue;
 		mode = drm_mode_duplicate(connector->dev, modes[i]);
 		if (!mode)
 			continue;
@@ -1273,6 +1343,27 @@ static const struct combo_dev_cfg_s soph_dsi_720p60 = {
 	/* pixel_clk * bits_per_pixel / lanes, in Mbit/s */
 	.phy_data_rate = 74250 * 24 / (2 * 1000),
 	.pixel_clk = 74250,
+};
+
+static const struct soph_profile soph_hdmi_profile = {
+	.link = &soph_dsi_720p60,
+	.connector_type = DRM_MODE_CONNECTOR_HDMIA,
+	.mode_flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
+	.bridge = true,
+	.gop_mode = true,
+	.sync_low = true,
+	.limited_rgb = true,
+	.refresh = 60,
+};
+
+/* The Sipeed carrier's ST7701 panel, as st7701-panel-init left it: 368x552, 696x602 total
+ * at 31.424 MHz, V+/H-, full-range RGB. */
+static const struct soph_profile soph_panel_profile = {
+	.connector_type = DRM_MODE_CONNECTOR_DSI,
+	.refresh = 75,
+	.mode_flags = DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NHSYNC,
+	.width = 368,
+	.height = 552,
 };
 
 /*
@@ -1444,10 +1535,12 @@ static int soph_read_mode(struct soph_drm *sd)
 	 * 1280x720p60. Removing this because "positive is correct for a
 	 * DT-configured bridge" produced three black-screen deploys. Do not.
 	 */
-	t.vsync_pol = false;
-	t.hsync_pol = false;
-	sclr_disp_set_timing(&t);
-	sclr_disp_get_hw_timing(&t);
+	if (sd->profile->sync_low) {
+		t.vsync_pol = false;
+		t.hsync_pol = false;
+		sclr_disp_set_timing(&t);
+		sclr_disp_get_hw_timing(&t);
+	}
 
 	if (!t.htotal || !t.vtotal || t.hfde_end <= t.hfde_start ||
 	    t.vfde_end <= t.vfde_start) {
@@ -1459,14 +1552,44 @@ static int soph_read_mode(struct soph_drm *sd)
 
 	w = t.hfde_end - t.hfde_start + 1;
 	h = t.vfde_end - t.vfde_start + 1;
+	if (sd->profile->width &&
+	    (w != sd->profile->width || h != sd->profile->height)) {
+		drm_err(&sd->drm,
+			"DISP is running %ux%u, not the panel's %ux%u -- initialize the panel first\n",
+			w, h, sd->profile->width, sd->profile->height);
+		return -ENODEV;
+	}
 
-	/* We cannot read the pixel clock back, so assume the 60 Hz this panel
-	 * path is set up for and derive the clock from the blanking totals,
-	 * which is the number userspace actually uses for pacing. */
-	refresh = 60;
+	/* We cannot read the pixel clock back, so take the refresh from the
+	 * profile and derive the clock from the blanking totals, which is the
+	 * number userspace actually uses for pacing. */
+	refresh = sd->profile->refresh;
 
 	soph_fill_mode(&sd->native_mode, &t, w, h, refresh);
 	sd->native_mode.type |= DRM_MODE_TYPE_PREFERRED;
+	sd->native_mode.flags = sd->profile->mode_flags;
+	if (rotation) {
+		struct drm_display_mode *m = &sd->native_mode;
+
+		/* Virtual landscape/portrait coordinates; the physical link is
+		 * unchanged. Swap the entire axes to keep DRM timings monotonic. */
+		swap(m->hdisplay, m->vdisplay);
+		swap(m->hsync_start, m->vsync_start);
+		swap(m->hsync_end, m->vsync_end);
+		swap(m->htotal, m->vtotal);
+		drm_mode_set_name(m);
+	}
+	if (!sd->has_gop)
+		goto done;
+	if (rotation) {
+		/* The same rotated line, half the active size. */
+		sd->gop_mode = sd->native_mode;
+		sd->gop_mode.hdisplay /= 2;
+		sd->gop_mode.vdisplay /= 2;
+		sd->gop_mode.type &= ~DRM_MODE_TYPE_PREFERRED;
+		drm_mode_set_name(&sd->gop_mode);
+		goto done;
+	}
 
 	/*
 	 * The GOP mode is the panel halved, and the overlay's 2x scaler puts
@@ -1490,6 +1613,7 @@ static int soph_read_mode(struct soph_drm *sd)
 	 */
 	soph_fill_mode(&sd->gop_mode, &t, w / 2, h / 2, refresh);
 
+done:
 	sd->vbl_period = ns_to_ktime(NSEC_PER_SEC / refresh);
 	/* Poll several times per frame to catch the real frame-end for a
 	 * tear-free flip; see soph_vbl_fn. */
@@ -1499,7 +1623,7 @@ static int soph_read_mode(struct soph_drm *sd)
 		 "hardware mode %s (htotal %u vtotal %u, %u kHz), GOP mode %s\n",
 		 sd->native_mode.name, sd->native_mode.htotal,
 		 sd->native_mode.vtotal, sd->native_mode.clock,
-		 sd->gop_mode.name);
+		 sd->has_gop ? sd->gop_mode.name : "none");
 	return 0;
 }
 
@@ -1516,6 +1640,16 @@ static int soph_dumb_create(struct drm_file *file, struct drm_device *dev,
 			    struct drm_mode_create_dumb *args)
 {
 	args->pitch = ALIGN(DIV_ROUND_UP(args->width * args->bpp, 8), 32);
+	if (rotation) {
+		/* The LDC reads the padding: a 64-byte pitch and 64-row height. */
+		u64 pitch = ALIGN(DIV_ROUND_UP_ULL((u64)args->width * args->bpp, 8), 64);
+
+		if (!args->width || !args->height || !args->bpp ||
+		    pitch > U32_MAX || args->height > U32_MAX - 63)
+			return -EINVAL;
+		args->pitch = pitch;
+		args->size = pitch * ALIGN((u64)args->height, 64);
+	}
 	return drm_gem_dma_dumb_create_internal(file, dev, args);
 }
 
@@ -1543,12 +1677,20 @@ static int soph_drm_probe(struct platform_device *pdev)
 	struct drm_device *drm;
 	int ret;
 
+	if (rotation && rotation != 90 && rotation != 270)
+		return -EINVAL;
+
 	sd = devm_drm_dev_alloc(&pdev->dev, &soph_drm_driver,
 				struct soph_drm, drm);
 	if (IS_ERR(sd))
 		return PTR_ERR(sd);
 	drm = &sd->drm;
 	platform_set_drvdata(pdev, sd);
+	sd->profile = device_get_match_data(&pdev->dev) ?: &soph_hdmi_profile;
+	/* The rotated panel has a half-size mode too, doubled by the CPU in
+	 * front of the rotation in place of by the GOP. */
+	sd->has_gop = (sd->profile->gop_mode && !rotation) ||
+		      (rotation && !sd->profile->bridge);
 
 	/* GEM DMA buffers come out of CMA, same pool the VIP video buffers and
 	 * gmac0's descriptor rings share. A 1280x720 RGB888 buffer is 2.7 MB
@@ -1579,8 +1721,8 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 * (along with the D-PHY lanes, the PLL and the DSI MAC), so this has to
 	 * happen first or we find the 320x240 reset timing and refuse to probe.
 	 */
-	if (!soph_dsi_host_registered) {
-		ret = soph_mipi_tx_setup(&soph_dsi_720p60);
+	if (!soph_dsi_host_registered && sd->profile->link) {
+		ret = soph_mipi_tx_setup(sd->profile->link);
 		if (ret) {
 			drm_err(drm, "DSI bring-up failed (%d)\n", ret);
 			return ret;
@@ -1592,7 +1734,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 * other end. lontium-lt8912b registers itself against this host from
 	 * its own i2c probe, so it may well have deferred until now.
 	 */
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node && sd->profile->bridge) {
 		if (!soph_dsi_host_registered) {
 			soph_dsi_host.dev = &pdev->dev;
 			soph_dsi_host.ops = &soph_dsi_host_ops;
@@ -1621,13 +1763,23 @@ static int soph_drm_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	if (rotation) {
+		sd->rot = soph_rot_create(pdev, sd->native_mode.hdisplay,
+					 sd->native_mode.vdisplay, rotation);
+		if (IS_ERR(sd->rot))
+			return dev_err_probe(&pdev->dev, PTR_ERR(sd->rot),
+					     "cannot allocate output rotation\n");
+	}
+
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;
-	/* Framebuffers range from the GOP mode up to the panel. */
-	drm->mode_config.min_width = sd->gop_mode.hdisplay;
+	/* Framebuffers range from the GOP mode, if there is one, up to the panel. */
+	drm->mode_config.min_width = sd->has_gop ?
+		sd->gop_mode.hdisplay : sd->native_mode.hdisplay;
 	drm->mode_config.max_width = sd->native_mode.hdisplay;
-	drm->mode_config.min_height = sd->gop_mode.vdisplay;
+	drm->mode_config.min_height = sd->has_gop ?
+		sd->gop_mode.vdisplay : sd->native_mode.vdisplay;
 	drm->mode_config.max_height = sd->native_mode.vdisplay;
 	drm->mode_config.preferred_depth = 32;
 	drm->mode_config.funcs = &soph_mode_config_funcs;
@@ -1649,7 +1801,7 @@ static int soph_drm_probe(struct platform_device *pdev)
 	 */
 	drm_connector_helper_add(&sd->connector, &soph_conn_helper_funcs);
 	ret = drm_connector_init(drm, &sd->connector, &soph_conn_funcs,
-				 DRM_MODE_CONNECTOR_HDMIA);
+				 sd->profile->connector_type);
 	if (ret)
 		return ret;
 	/* No hotplug visibility on a link we do not drive: claim
@@ -1659,14 +1811,23 @@ static int soph_drm_probe(struct platform_device *pdev)
 	/* The LT8912B reads display_info.is_hdmi to choose HDMI vs DVI
 	 * signalling; with our own (EDID-less) connector it would stay
 	 * zeroed and program DVI. Force HDMI. */
-	sd->connector.display_info.is_hdmi = true;
+	sd->connector.display_info.is_hdmi = sd->profile->bridge;
 
 	ret = drm_simple_display_pipe_init(drm, &sd->pipe, &soph_pipe_funcs,
-					   soph_formats,
-					   ARRAY_SIZE(soph_formats),
+					   rotation ? soph_rot_formats : soph_formats,
+					   rotation ? ARRAY_SIZE(soph_rot_formats) :
+						      ARRAY_SIZE(soph_formats),
 					   NULL, &sd->connector);
 	if (ret)
 		return ret;
+
+	if (rotation) {
+		/* Premultiplied RGB over black is the stored RGB, without the A byte. */
+		ret = drm_plane_create_blend_mode_property(&sd->pipe.plane,
+						 BIT(DRM_MODE_BLEND_PREMULTI));
+		if (ret)
+			return ret;
+	}
 
 	/* How NV12 buffers are encoded; see soph_yuv_csc(). Before the reset
 	 * below, which puts the defaults into the plane state. */
@@ -1702,10 +1863,21 @@ static int soph_drm_probe(struct platform_device *pdev)
 static void soph_drm_remove(struct platform_device *pdev)
 {
 	struct soph_drm *sd = platform_get_drvdata(pdev);
+	bool frame;
+	int ret;
 
 	drm_dev_unplug(&sd->drm);
 	drm_atomic_helper_shutdown(&sd->drm);
 	hrtimer_cancel(&sd->vbl_timer);
+	if (sd->rot) {
+		sclr_disp_frame_start_poll();
+		ret = read_poll_timeout(sclr_disp_frame_start_poll, frame, frame, 100,
+				      50000, false);
+		if (ret) {
+			soph_rot_retain(sd->rot);
+			drm_err(&sd->drm, "no frame after park; rotation buffers retained until reboot\n");
+		}
+	}
 }
 
 /*
@@ -1719,7 +1891,8 @@ static void soph_drm_remove(struct platform_device *pdev)
  * registers, only identity and the graph edge.
  */
 static const struct of_device_id soph_drm_of_match[] = {
-	{ .compatible = "badge,sg2000-soph-dsi" },
+	{ .compatible = "badge,sg2000-soph-dsi", .data = &soph_hdmi_profile },
+	{ .compatible = "badge,sg2002-soph-dsi-st7701", .data = &soph_panel_profile },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, soph_drm_of_match);

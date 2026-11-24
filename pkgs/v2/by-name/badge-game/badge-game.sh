@@ -6,9 +6,15 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
+if [ "$BADGE_OUTPUT_MODE" = native ] && [ -n "${SWAYSOCK:-}" ]; then
+  BADGE_OUTPUT_MODE=$(swaymsg -rt get_outputs |
+    jq -r --arg name "$BADGE_OUTPUT_NAME" \
+      '.[] | select(.name == $name) | .current_mode | "\(.width)x\(.height)"')
+fi
+
 restore() {
   if [ -n "${SWAYSOCK:-}" ]; then
-    swaymsg output HDMI-A-1 mode "$BADGE_OUTPUT_MODE" > /dev/null || true
+    swaymsg output "$BADGE_OUTPUT_NAME" mode "$BADGE_OUTPUT_MODE" > /dev/null || true
   fi
 }
 

@@ -1,5 +1,6 @@
 # The LicheeRV Nano's device tree for each core, plain and with each fragment: memory,
-# model, pin controller, reserved regions, GPIO names, and the nodes the fragments switch.
+# model, pin controller, reserved regions, GPIO names, and the nodes the fragments switch
+# or add.
 { pkgs }:
 let
   dtbOf =
@@ -17,7 +18,8 @@ let
     check ${core} ${dtbOf core { }} \
       ${dtbOf core { dtsFragments = [ "licheerv-nano-no-wifi.dtsi" ]; }} \
       ${dtbOf core { dtsFragments = [ "licheerv-nano-no-ethernet.dtsi" ]; }} \
-      ${dtbOf core { usbHost = true; }}
+      ${dtbOf core { usbHost = true; }} \
+      ${dtbOf core { dtsFragments = [ "licheerv-nano-dsi-panel.dtsi" ]; }}
   '';
 in
 pkgs.runCommand "dtb-licheerv-nano" { nativeBuildInputs = [ pkgs.dtc ]; } ''
@@ -28,7 +30,7 @@ pkgs.runCommand "dtb-licheerv-nano" { nativeBuildInputs = [ pkgs.dtc ]; } ''
     [ "$got" = "$4" ] || fail "$2 $3 is '$got', not '$4'"
   }
 
-  # check <core> <plain> <no-wifi> <no-ethernet> <usb-host>
+  # check <core> <plain> <no-wifi> <no-ethernet> <usb-host> <dsi-panel>
   check() {
     core=$1 d=$2
     dtc -I dtb -O dts -o plain.dts $d 2> /dev/null
@@ -55,15 +57,34 @@ pkgs.runCommand "dtb-licheerv-nano" { nativeBuildInputs = [ pkgs.dtc ]; } ''
     is $d /soc/usb@4340000 dr_mode peripheral
     is $5 /soc/usb@4340000 dr_mode host
     is $d /soc/serial@4150000 status disabled
+
+    p=$6
+    is $p /backlight compatible pwm-backlight
+    is $p /backlight brightness-levels "0 10 20 30 40 50" u
+    is $p /backlight brightness-levels-scale 100 u
+    is $p /backlight default-brightness-level 2 u
+    is $p /soc/pwm@3062000 status okay
+    is $p /soc/cvi_vpss interrupt-names sc
+    is $p /soc/dsi compatible badge,sg2002-soph-dsi-st7701
+    is $p /soc/i2c@4040000 status okay
+    is $p /soc/i2c@4040000/touchscreen@5a compatible hynitron,cst340
+    is $p /soc/i2c@4040000/touchscreen@5a interrupts "3 2" x
+    for b in $(fdtget -t bx $p /soc/gpio@5021000/gpio-controller@0 gpio-line-names); do
+      printf "\\x$b"
+    done | tr '\0' '\n' > porte.names
+    got=$(sed -n '1p;4p;5p' porte.names | paste -sd ' ')
+    [ "$got" = "lcd-reset tp-irq tp-reset" ] || fail "porte 0, 3 and 4 are '$got'"
   }
 
   ${checks "riscv"}
   is $d /reserved-memory/mmode_resv0@80000000 reg "80000000 80000" x
+  is $p /soc/cvi_vpss interrupts "19 4" x
 
   ${checks "arm"}
   is $d /cpus/cpu@0 compatible arm,cortex-a53
   is $d /soc/interrupt-controller@1f01000 compatible arm,cortex-a15-gic
   is $d /soc/watchdog@3010000 reg "3010000 1000" x
+  is $p /soc/cvi_vpss interrupts "0 9 4" x
   # every interrupt is in the GIC's three cells
   if grep -E 'interrupts = <0x[0-9a-f]+ 0x[0-9a-f]+>;' plain.dts; then
     fail "an interrupt is not in the GIC's form"

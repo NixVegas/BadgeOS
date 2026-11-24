@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/* The codec island is loaded on demand by the cube service. */
+&vcodec {
+	status = "okay";
+	interrupts = <SOC_PERIPHERAL_IRQ(6) IRQ_TYPE_LEVEL_HIGH>,
+		     <SOC_PERIPHERAL_IRQ(5) IRQ_TYPE_LEVEL_HIGH>,
+		     <SOC_PERIPHERAL_IRQ(7) IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "h265", "h264", "sbm";
+};
+&jpu {
+	status = "okay";
+	interrupts = <SOC_PERIPHERAL_IRQ(4) IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "jpeg";
+};
+&cvi_vc_drv { status = "okay"; };

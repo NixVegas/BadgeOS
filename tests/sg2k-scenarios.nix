@@ -23,9 +23,101 @@ let
 
   has = needle: haystack: lib.hasInfix needle haystack;
   nameOf = p: p.pname or (lib.getName p);
+  nano.hardware.sg2k.board = lib.mkForce "licheerv-nano";
+  panel.hardware.sg2k = {
+    dsiPanel.enable = true;
+  };
+  noBar.badge.graphics.touchBar.enable = false;
+  radios.hardware.sg2k.wifi = {
+    onDemand = true;
+    bluetooth = "sdio";
+  };
+  software.hardware.sg2k.coreSelect = {
+    enable = true;
+    backend = "software";
+  };
+  refused =
+    message: c:
+    lib.optional (
+      !lib.any (a: !a.assertion && has message a.message) c.assertions
+    ) "the unsupported configuration was accepted";
   citadelKey = "citadel.build.dc.nixos.lv-1:UZbkvFcWZr/VP7cvNPLRpcMTCvaYw7X5XQDzA+nPVxY=";
 in
 {
+  sg2k-panel = scenario "sg2k-panel" [ nano panel software ] (
+    c:
+    map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)
+    ++ lib.optional (
+      c.badge.graphics.outputName != "DSI-1" || c.badge.graphics.outputMode != "native"
+    ) "panel has no native desktop by default"
+    ++ lib.optional (c.hardware.sg2k.usb.role == "host") "panel desktop takes the USB host port"
+    ++ lib.optional (c.hardware.sg2k.memory.cmaMiB > 64) "panel reservation exceeds 64 MiB"
+    ++ lib.optional (!c.hardware.sg2k.memory.stripModuleSymbols) "the panel keeps its module symbols"
+    ++ lib.optional (
+      lib.concatStringsSep " " (builtins.attrNames c.badge.graphics.touchBar.apps)
+      != "bluetooth-devices cube demo doom info quake terminal wifi-join"
+    ) "full menu differs"
+    ++ lib.optional (
+      !lib.all (a: a.system || c.systemd.user.services ? ${lib.removeSuffix ".service" a.unit}) (
+        builtins.attrValues c.badge.graphics.touchBar.apps
+      )
+    ) "an app has no unit"
+  );
+  sg2k-panel-no-bar = scenario "sg2k-panel-no-bar" [ nano panel noBar ] (
+    c:
+    map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)
+    ++ lib.optional (
+      c.badge.graphics.touchBar.apps != { } || c.badge.graphics.extraConfig != ""
+    ) "the bar is configured"
+    ++ lib.optional c.hardware.sg2k.wifi.onDemand "the radios are on demand"
+    ++ lib.optional (!lib.elem "badge-doom" (map nameOf c.environment.systemPackages)) "no games"
+  );
+  sg2k-panel-off = scenario "sg2k-panel-off" [ { badge.graphics.enable = true; } ] (
+    c:
+    lib.optional (
+      c.hardware.sg2k.dsiPanel.enable
+      || c.badge.graphics.touchBar.enable
+      || c.hardware.sg2k.memory.stripModuleSymbols
+    ) "a panel area is enabled on the Badge"
+    ++ lib.optional (c.systemd.services ? st7701-panel-init) "the Badge starts the panel"
+    ++ lib.optional (c.badge.graphics.outputName != "HDMI-A-1") "the Badge lost HDMI"
+  );
+  sg2k-software-core = scenario "sg2k-software-core" [ nano software ] (
+    c:
+    map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)
+    ++ lib.optional (!(c.systemd.services ? "badge-core-reboot@")) "no software core service"
+    ++ lib.optional (c.systemd.services ? nix-badge-bootswap) "the GPIO latch backend also runs"
+  );
+  sg2k-software-core-single = scenario "sg2k-software-core-single" [
+    nano
+    software
+    { hardware.sg2k.cores = lib.mkForce [ "riscv" ]; }
+  ] (refused "both core payloads");
+  sg2k-software-core-signed = scenario "sg2k-software-core-signed" [
+    nano
+    software
+    { hardware.sg2k.firmware.secureBoot = true; }
+  ] (refused "unsigned boot firmware");
+  sg2k-software-core-sd-path = scenario "sg2k-software-core-sd-path" [
+    nano
+    software
+    { hardware.sg2k.firmware.fipPath = "/boot/other.bin"; }
+  ] (refused "SD firmware at /boot/fip.bin");
+  sg2k-radios-on-demand = scenario "sg2k-radios-on-demand" [ nano radios ] (
+    c:
+    lib.optional (lib.elem "aic8800_fdrv" c.boot.kernelModules) "Wi-Fi starts at boot"
+    ++ lib.optional (
+      !lib.elem "aic8800_fdrv" c.boot.blacklistedKernelModules
+    ) "Wi-Fi modaliases are not held off"
+    ++ lib.optional (
+      !(c.systemd.services ? nix-badge-wifi) || !(c.systemd.services ? badge-panel-bluetooth)
+    ) "radio consumers are missing"
+    ++ lib.optional (c.systemd.services.bluetooth.wantedBy != [ ]) "Bluetooth starts at boot"
+    ++ lib.optional (
+      c.systemd.services.badge-panel-radio-stack.serviceConfig ? ExecStop
+    ) "the shared drivers do not stay loaded"
+  );
+
   sg2k-no-emmc = scenario "sg2k-no-emmc" [ { hardware.sg2k.emmc.enable = false; } ] (
     config:
     let

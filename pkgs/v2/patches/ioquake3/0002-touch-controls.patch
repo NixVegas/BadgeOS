@@ -1,0 +1,198 @@
+sdl_input: add touch controls
+
+With BADGE_PANEL_TOUCH=1, fingers drive panel_touch.h, and its output
+is queued as the events a joystick, a mouse and a keyboard would send:
+the stick moves, the look area aims, the buttons fire, jump, change
+weapon and open the menu, and in the menu the stick is the arrow keys.
+cl_scrn.c draws the controls over each frame. Without the variable
+nothing changes.
+
+---
+diff --git a/code/sdl/sdl_input.c b/code/sdl/sdl_input.c
+--- a/code/sdl/sdl_input.c
++++ b/code/sdl/sdl_input.c
+@@ -56,6 +56,8 @@
+ static int vidRestartTime = 0;
+ 
+ static int in_eventTime = 0;
++
++#include "panel_touch_input.h"
+ 
+ static SDL_Window *SDL_window = NULL;
+ 
+@@ -1077,6 +1079,12 @@
+         }
+ 				break;
+ 
++			case SDL_FINGERDOWN:
++			case SDL_FINGERMOTION:
++			case SDL_FINGERUP:
++				if (in_panel_touch_enabled) IN_PanelTouchEvent(&e.tfinger);
++				break;
++
+ 			case SDL_MOUSEMOTION:
+ 				if( mouseActive )
+ 				{
+@@ -1163,7 +1171,10 @@
+ 					case SDL_WINDOWEVENT_MINIMIZED:    Cvar_SetValue( "com_minimized", 1 ); break;
+ 					case SDL_WINDOWEVENT_RESTORED:
+ 					case SDL_WINDOWEVENT_MAXIMIZED:    Cvar_SetValue( "com_minimized", 0 ); break;
+-					case SDL_WINDOWEVENT_FOCUS_LOST:   Cvar_SetValue( "com_unfocused", 1 ); break;
++					case SDL_WINDOWEVENT_FOCUS_LOST:
++						if (in_panel_touch_enabled) IN_PanelTouchRelease();
++						Cvar_SetValue( "com_unfocused", 1 );
++						break;
+ 					case SDL_WINDOWEVENT_FOCUS_GAINED: Cvar_SetValue( "com_unfocused", 0 ); break;
+ 				}
+ 				break;
+@@ -1232,6 +1243,7 @@
+ 		IN_ActivateMouse( cls.glconfig.isFullscreen );
+ 
+ 	IN_ProcessEvents( );
++	if (in_panel_touch_enabled) IN_PanelTouchFrame();
+ 
+ 	// Set event time for next frame to earliest possible time an event could happen
+ 	in_eventTime = Sys_Milliseconds( );
+@@ -1260,6 +1272,11 @@
+ 	}
+ 
+ 	SDL_window = (SDL_Window *)windowData;
++	in_panel_touch_enabled = pt_enabled();
++	if (in_panel_touch_enabled) {
++		SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++		pt_resize(&in_panel_touch, cls.glconfig.vidWidth, cls.glconfig.vidHeight);
++	}
+ 
+ 	Com_DPrintf( "\n------- Input Initialization -------\n" );
+ 
+@@ -1296,6 +1313,7 @@
+ */
+ void IN_Shutdown( void )
+ {
++	if (in_panel_touch_enabled) IN_PanelTouchRelease();
+ 	SDL_StopTextInput( );
+ 
+ 	IN_DeactivateMouse( Cvar_VariableIntegerValue( "r_fullscreen" ) != 0 );
+diff --git a/code/client/cl_scrn.c b/code/client/cl_scrn.c
+--- a/code/client/cl_scrn.c
++++ b/code/client/cl_scrn.c
+@@ -22,6 +22,7 @@
+ // cl_scrn.c -- master for refresh, status bar, console, chat, notify, etc
+ 
+ #include "client.h"
++#include "panel_touch_draw.h"
+ 
+ qboolean	scr_initialized;		// ready to draw
+ 
+@@ -546,6 +547,7 @@
+ 	if ( cl_debuggraph->integer || cl_timegraph->integer || cl_debugMove->integer ) {
+ 		SCR_DrawDebugGraph ();
+ 	}
++	SCR_DrawPanelTouch();
+ }
+ 
+ /*
+diff --git a/code/sdl/panel_touch_input.h b/code/sdl/panel_touch_input.h
+new file mode 100644
+index 0000000..e44cd60
+--- /dev/null
++++ b/code/sdl/panel_touch_input.h
+@@ -0,0 +1,71 @@
++#include "../../panel_touch.h"
++
++struct panel_touch in_panel_touch;
++qboolean in_panel_touch_enabled;
++static unsigned panel_keys;
++static int panel_axes[2], panel_repeat;
++static float panel_look_x, panel_look_y;
++
++static void IN_PanelKeys(unsigned keys)
++{
++    static const int codes[] = {K_MOUSE1, K_SPACE, K_ESCAPE, K_MWHEELUP, K_ENTER,
++        K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW};
++    for (unsigned i = 0; i < 9; i++)
++        if ((keys ^ panel_keys) & (1u << i))
++            Com_QueueEvent(in_eventTime, SE_KEY, codes[i], (keys & (1u << i)) != 0, 0, NULL);
++    if ((keys ^ panel_keys) & 0x1e0u) panel_repeat = Sys_Milliseconds() + 350;
++    panel_keys = keys;
++}
++
++static void IN_PanelTouchFrame(void)
++{
++    struct pt_output o = pt_take(&in_panel_touch);
++    qboolean menu = Key_GetCatcher() != 0;
++    int axes[] = {menu ? 0 : (int)(o.strafe * 127), menu ? 0 : (int)(-o.forward * 127)};
++    for (unsigned i = 0; i < 2; i++) if (axes[i] != panel_axes[i]) {
++        Com_QueueEvent(in_eventTime, SE_JOYSTICK_AXIS, i, axes[i], 0, NULL);
++        panel_axes[i] = axes[i];
++    }
++    unsigned arrows = 0;
++    if (menu) {
++        if (o.forward > .35f) arrows |= 1u << 5;
++        if (o.forward < -.35f) arrows |= 1u << 6;
++        if (o.strafe < -.35f) arrows |= 1u << 7;
++        if (o.strafe > .35f) arrows |= 1u << 8;
++    }
++    unsigned buttons = o.held & ~(1u << PT_GUN);
++    IN_PanelKeys(buttons | (o.pressed & ~(1u << PT_GUN)) | arrows);
++    IN_PanelKeys(buttons | arrows);
++    if (arrows && Sys_Milliseconds() >= panel_repeat) {
++        static const int codes[] = {K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW};
++        for (unsigned i = 0; i < 4; i++) if (arrows & (1u << (i+5)))
++            Com_QueueEvent(in_eventTime, SE_KEY, codes[i], qtrue, 0, NULL);
++        panel_repeat = Sys_Milliseconds() + 150;
++    }
++    if (o.pressed & (1u << PT_GUN)) {
++        Com_QueueEvent(in_eventTime, SE_KEY, K_MWHEELUP, qtrue, 0, NULL);
++        Com_QueueEvent(in_eventTime, SE_KEY, K_MWHEELUP, qfalse, 0, NULL);
++    }
++    panel_look_x += o.look_x;
++    panel_look_y += o.look_y;
++    if ((int)panel_look_x || (int)panel_look_y) {
++        Com_QueueEvent(in_eventTime, SE_MOUSE, (int)panel_look_x, (int)panel_look_y, 0, NULL);
++        panel_look_x -= (int)panel_look_x;
++        panel_look_y -= (int)panel_look_y;
++    }
++}
++
++static void IN_PanelTouchRelease(void)
++{
++    panel_look_x = panel_look_y = 0;
++    pt_release_all(&in_panel_touch);
++    IN_PanelTouchFrame();
++}
++
++static void IN_PanelTouchEvent(const SDL_TouchFingerEvent *event)
++{
++    pt_event(&in_panel_touch, event->type == SDL_FINGERDOWN ? PT_DOWN :
++             event->type == SDL_FINGERUP ? PT_UP : PT_MOTION,
++             event->fingerId, event->x, event->y);
++    IN_PanelTouchFrame();
++}
+diff --git a/code/client/panel_touch_draw.h b/code/client/panel_touch_draw.h
+new file mode 100644
+index 0000000..7dd95e4
+--- /dev/null
++++ b/code/client/panel_touch_draw.h
+@@ -0,0 +1,21 @@
++#include "../../panel_touch.h"
++
++extern struct panel_touch in_panel_touch;
++extern qboolean in_panel_touch_enabled;
++
++static void SCR_PanelFill(void *context, int x, int y, int width, int height, unsigned shade)
++{
++    float value = shade / 255.0f;
++    vec4_t color = {value, value, value, 1};
++    (void)context;
++    re.SetColor(color);
++    re.DrawStretchPic(x, y, width, height, 0, 0, 0, 0, cls.whiteShader);
++}
++
++static void SCR_DrawPanelTouch(void)
++{
++    if (!in_panel_touch_enabled) return;
++    pt_resize(&in_panel_touch, cls.glconfig.vidWidth, cls.glconfig.vidHeight);
++    pt_draw(&in_panel_touch, SCR_PanelFill, NULL, "JUMP");
++    re.SetColor(NULL);
++}

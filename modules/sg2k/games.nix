@@ -8,6 +8,7 @@
 }:
 let
   cfg = config.badge.graphics;
+  touch = cfg.touchBar.enable;
 
   # The demo's pak0 for assets plus the 1.32 point release, whose QVMs ioquake3
   # accepts. The directory must be literally baseq3.
@@ -27,9 +28,38 @@ let
 
   # Runs a game and puts the output back in the desktop mode however it ends.
   badge-game = pkgs.badge-game.override {
-    inherit (cfg) outputMode;
+    inherit (cfg) outputMode outputName;
     sway = config.programs.sway.package;
   };
+
+  # Crispy DOOM with touch controls under the bar, and at the desktop's size in a
+  # native mode.
+  badge-doom = pkgs.badge-doom.override {
+    inherit badge-game;
+    inherit (cfg) outputName;
+    sway = config.programs.sway.package;
+    nativeMode = cfg.outputMode == "native";
+    withTouch = touch;
+  };
+
+  # A native mode has no 640x360 to switch to: the picture is the output's size.
+  quakeSize = lib.optionalString (cfg.outputMode == "native") ''
+    read -r Q3_W Q3_H < <(${config.programs.sway.package}/bin/swaymsg -rt get_outputs |
+      ${lib.getExe pkgs.jq} -r --arg name ${lib.escapeShellArg cfg.outputName} \
+        '.[] | select(.name == $name) | .rect | "\(.width) \(.height)"')
+  '';
+
+  # The touch controls: their settings, and the native game code they run with, in
+  # a home path of their own.
+  quakeTouch = lib.optionalString touch ''
+    export BADGE_PANEL_TOUCH=1 SDL_APP_ID=badge-quake SDL_VIDEO_WAYLAND_WMCLASS=badge-quake
+    export Q3_SOUND=''${Q3_SOUND:-1}
+    dir=''${XDG_DATA_HOME:-$HOME/.local/share}/badge-panel-quake
+    ${pkgs.coreutils}/bin/mkdir -p "$dir/baseq3"
+    ${pkgs.coreutils}/bin/install -m644 ${../../pkgs/v2/patches/ioquake3/panel.cfg} "$dir/baseq3/autoexec.cfg"
+    ${pkgs.coreutils}/bin/ln -sf ${pkgs.ioquake3}/share/ioquake3/baseq3/*.so "$dir/baseq3/"
+    set -- +set fs_homepath "$dir" +map q3dm1 "$@"
+  '';
 
   # ioquake3 tuned for llvmpipe on one in-order core. Keep the depth test (early-Z)
   # and mipmaps on.
@@ -41,6 +71,7 @@ let
 
     # Rasterise inline: one worker thread on one CPU costs 32%.
     export LP_NUM_THREADS="''${LP_NUM_THREADS:-0}"
+    ${quakeSize}${quakeTouch}
 
     # A persistent JIT cache: the first frame takes ~2.5 s cold, ~0.14 s warm.
     export MESA_SHADER_CACHE_DIR="''${MESA_SHADER_CACHE_DIR:-$HOME/.cache/mesa_shader_cache}"
@@ -77,8 +108,16 @@ let
       "$@"
   '';
 
-  # "Nix Fixes This", a 640x360 CPU-rendered demoscene prod with a chiptune.
-  badge-demo-bin = pkgs.nix-fixes-this;
+  # "Nix Fixes This", a 640x360 CPU-rendered demoscene prod with a chiptune. With a
+  # demoSize it renders into a window of that size.
+  demoSize = map lib.toInt (lib.splitString "x" cfg.demoSize);
+  badge-demo-bin = pkgs.nix-fixes-this.override (
+    lib.optionalAttrs (cfg.demoSize != null) {
+      windowed = true;
+      width = lib.elemAt demoSize 0;
+      height = lib.elemAt demoSize 1;
+    }
+  );
   badge-demo = pkgs.writeShellScriptBin "badge-demo" ''
     export SDL_VIDEODRIVER="''${SDL_VIDEODRIVER:-wayland}"
     export SDL_AUDIODRIVER="''${SDL_AUDIODRIVER:-alsa}"
@@ -87,6 +126,11 @@ let
 in
 {
   options.badge.graphics = {
+    cube = lib.mkEnableOption "the CODA980 cube and its launch service" // {
+      default = pkgs.stdenv.hostPlatform.isAarch64 || touch;
+      defaultText = lib.literalExpression "pkgs.stdenv.hostPlatform.isAarch64 || config.badge.graphics.touchBar.enable";
+    };
+
     autostartQuake = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -97,6 +141,13 @@ in
       type = lib.types.bool;
       default = false;
       description = ''Install the "Nix Fixes This" demoscene prod (badge-demo).'';
+    };
+
+    demoSize = lib.mkOption {
+      type = lib.types.nullOr (lib.types.strMatching "[1-9][0-9]*x[1-9][0-9]*");
+      default = null;
+      example = "552x320";
+      description = "Size of the demo's window, or null for the fullscreen 1280x720 demo.";
     };
 
     autostartDemo = lib.mkOption {
@@ -163,9 +214,63 @@ in
         pkgs.quake3demodata
         pkgs.quake3pointrelease
         pkgs.crispy-doom
-        (pkgs.badge-doom.override { inherit badge-game; })
+        badge-doom
         badge-game
       ]
       ++ lib.optionals (cfg.demo || cfg.autostartDemo) [ badge-demo ];
+
+    badge.graphics.demo = lib.mkIf touch (lib.mkDefault true);
+
+    badge.graphics.touchBar.apps = lib.mkIf touch {
+      doom = lib.mkIf cfg.quake {
+        label = "Doom";
+        group = "Games";
+        command = lib.getExe badge-doom;
+        hideBar = true;
+      };
+      quake = lib.mkIf cfg.quake {
+        label = "Quake";
+        group = "Games";
+        command = lib.getExe badge-quake3;
+        hideBar = true;
+      };
+      demo = lib.mkIf (cfg.demo || cfg.autostartDemo) {
+        label = "Nix Fixes This";
+        group = "Demos";
+        command = lib.getExe badge-demo;
+      };
+      cube = lib.mkIf cfg.cube {
+        label = "Cube";
+        group = "Demos";
+        unit = "badge-coda-cube@badge.service";
+        system = true;
+        appId = "coda-cube";
+      };
+    };
+
+    # The bar waits for the first picture.
+    systemd.services."badge-coda-cube@" = lib.mkIf (touch && cfg.cube) {
+      overrideStrategy = "asDropin";
+      serviceConfig = {
+        Type = "notify";
+        TimeoutStartSec = cfg.touchBar.limits.start;
+        TimeoutStopSec = cfg.touchBar.limits.stop;
+      };
+    };
+
+    systemd.user.services = lib.mkIf touch {
+      badge-app-doom = lib.mkIf cfg.quake {
+        environment.DOOMWADDIR = "${freedoomWads}/share/games/doom";
+        serviceConfig.NoNewPrivileges = true;
+      };
+      badge-app-quake = lib.mkIf cfg.quake { serviceConfig.NoNewPrivileges = true; };
+      badge-app-demo = lib.mkIf (cfg.demo || cfg.autostartDemo) {
+        environment = {
+          SDL_APP_ID = "badge-demo";
+          # SDL's own choice, not the launcher's ALSA: sound follows the session's server.
+          SDL_AUDIODRIVER = "pipewire,pulseaudio,alsa";
+        };
+      };
+    };
   };
 }

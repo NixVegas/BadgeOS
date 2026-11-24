@@ -9,6 +9,18 @@
   shellcheck-minimal,
   systemd,
   coda-cube,
+  jq,
+  util-linux,
+  # For swaymsg, with fitWorkspace: a native mode passes its session's sway.
+  sway,
+  # The picture takes the size of USER's workspace, for an output that is not 1280x720.
+  fitWorkspace ? false,
+  args ? [
+    "--zero-copy"
+    "--pipeline"
+    "--aa"
+    "--deblock"
+  ],
 }:
 let
   libexec = "${placeholder "out"}/libexec/badge-coda-cube";
@@ -56,6 +68,19 @@ stdenvNoCC.mkDerivation {
           coreutils
           coda-cube
         ]
+      }
+    substituteInPlace ${libexec}/session \
+      --replace-fail @args@ ${lib.escapeShellArg (lib.escapeShellArgs args)} \
+      --replace-fail @tools@ ${
+        lib.escapeShellArg (
+          lib.optionalString fitWorkspace (
+            lib.makeBinPath [
+              sway
+              jq
+              util-linux
+            ]
+          )
+        )
       }
     substituteInPlace $out/bin/badge-coda-cube \
       --replace-fail @path@ ${

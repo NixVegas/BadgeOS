@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/* soph_drm owns the LDC; the vendor DWA module must stay unloaded. */
+#include <dt-bindings/clock/sophgo,cv1800.h>
+&{/soc/dsi} {
+	reg = <0x0a0c0000 0x1000>;
+	clocks = <&clk CLK_SRC_VIP_SYS_1>, <&clk CLK_SRC_VIP_SYS_2>,
+		 <&clk CLK_SRC_VIP_SYS_4>, <&clk CLK_DWA_VIP>;
+	clock-names = "sys1", "sys2", "sys4", "dwa";
+};

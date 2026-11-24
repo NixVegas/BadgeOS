@@ -1,0 +1,204 @@
+panel_touch: add a touch-control core for games on a small panel
+
+A touchscreen delivers fingers; these games read a stick, a pointer and
+buttons. panel_touch.h maps the fingers on a window to those: a movement
+stick on the left, a look area on the right and five buttons, each owned
+by one finger from touch to release. It draws its controls through a
+fill callback and uses nothing from the game or from SDL, so crispy-doom
+and ioquake3 both take it at the top of their trees, and it is tested by
+itself.
+
+---
+diff --git a/panel_touch.h b/panel_touch.h
+new file mode 100644
+index 0000000..e261a55
+--- /dev/null
++++ b/panel_touch.h
+@@ -0,0 +1,187 @@
++#ifndef BADGE_PANEL_TOUCH_H
++#define BADGE_PANEL_TOUCH_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <math.h>
++
++enum pt_button { PT_FIRE, PT_USE, PT_MENU, PT_GUN, PT_OK, PT_BUTTONS };
++enum pt_event { PT_DOWN, PT_MOTION, PT_UP };
++enum pt_region { PT_NONE = -1, PT_STICK = PT_BUTTONS, PT_LOOK };
++struct pt_rect { float x, y, w, h; };
++static const struct pt_rect pt_buttons[PT_BUTTONS] = {
++    {.80f, .77f, .19f, .20f}, {.62f, .77f, .16f, .20f},
++    {.01f, .03f, .18f, .15f}, {.62f, .03f, .16f, .15f}, {.80f, .03f, .19f, .15f}
++};
++struct pt_finger {
++    int64_t id;
++    float x, y, origin_x, origin_y;
++    int region;
++    bool active;
++};
++struct pt_output {
++    float strafe, forward, look_x, look_y;
++    unsigned held, pressed, released;
++};
++struct panel_touch {
++    struct pt_finger fingers[10];
++    struct pt_output output;
++    int width, height;
++};
++typedef void (*pt_fill)(void *context, int x, int y, int w, int h, unsigned shade);
++
++static inline bool pt_enabled(void)
++{
++    const char *value = getenv("BADGE_PANEL_TOUCH");
++    return value && strcmp(value, "1") == 0;
++}
++static inline void pt_release_all(struct panel_touch *p)
++{
++    p->output.released |= p->output.held;
++    p->output.held = p->output.pressed = 0;
++    p->output.strafe = p->output.forward = 0;
++    p->output.look_x = p->output.look_y = 0;
++    memset(p->fingers, 0, sizeof(p->fingers));
++}
++static inline void pt_resize(struct panel_touch *p, int width, int height)
++{
++    if (width == p->width && height == p->height) return;
++    pt_release_all(p);
++    p->width = width > 0 ? width : 1;
++    p->height = height > 0 ? height : 1;
++}
++static inline float pt_radius(const struct panel_touch *p)
++{
++    float x = p->width * .16f, y = p->height * .24f;
++    return x < y ? x : y;
++}
++static inline bool pt_contains(struct pt_rect r, float x, float y)
++{
++    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
++}
++static inline int pt_region_at(float x, float y)
++{
++    for (int i = 0; i < PT_BUTTONS; i++)
++        if (pt_contains(pt_buttons[i], x, y)) return i;
++    if (x < .4f && y >= .33f) return PT_STICK;
++    return x >= .4f ? PT_LOOK : PT_NONE;
++}
++static inline void pt_update(struct panel_touch *p)
++{
++    unsigned held = 0;
++    p->output.strafe = p->output.forward = 0;
++    for (unsigned i = 0; i < 10; i++) {
++        struct pt_finger *f = &p->fingers[i];
++        if (!f->active) continue;
++        if (f->region >= 0 && f->region < PT_BUTTONS) held |= 1u << f->region;
++        if (f->region == PT_STICK) {
++            float x = (f->x - f->origin_x) / pt_radius(p);
++            float y = (f->y - f->origin_y) / pt_radius(p);
++            float distance = sqrtf(x*x + y*y);
++            if (distance > .14f) {
++                float magnitude = distance < 1 ? (distance - .14f) / .86f : 1;
++                p->output.strafe = x * magnitude / distance;
++                p->output.forward = -y * magnitude / distance;
++            }
++        }
++    }
++    p->output.pressed |= held & ~p->output.held;
++    p->output.released |= p->output.held & ~held;
++    p->output.held = held;
++}
++/* Coordinates are normalized to the game window; ownership lasts until finger-up. */
++static inline void pt_event(struct panel_touch *p, enum pt_event type, int64_t id, float x, float y)
++{
++    if (!isfinite(x) || !isfinite(y) || p->width <= 0 || p->height <= 0) return;
++    int slot = -1;
++    for (unsigned i = 0; i < 10; i++)
++        if (p->fingers[i].active && p->fingers[i].id == id) slot = (int)i;
++    if (type == PT_DOWN) {
++        if (slot >= 0) return;
++        for (unsigned i = 0; i < 10; i++) if (!p->fingers[i].active) { slot = (int)i; break; }
++        if (slot < 0) return;
++        int region = pt_region_at(x, y);
++        if (region == PT_STICK)
++            for (unsigned i = 0; i < 10; i++)
++                if (p->fingers[i].active && p->fingers[i].region == PT_STICK) region = PT_NONE;
++        p->fingers[slot] = (struct pt_finger){.id=id, .region=region, .active=true,
++            .x=x*p->width, .y=y*p->height, .origin_x=x*p->width, .origin_y=y*p->height};
++    } else {
++        if (slot < 0) return;
++        struct pt_finger *f = &p->fingers[slot];
++        if (type == PT_UP) f->active = false;
++        else {
++            if (f->region == PT_LOOK || f->region == PT_FIRE) {
++                p->output.look_x += x*p->width - f->x;
++                p->output.look_y += y*p->height - f->y;
++            }
++            f->x = x*p->width;
++            f->y = y*p->height;
++        }
++    }
++    pt_update(p);
++}
++static inline struct pt_output pt_take(struct panel_touch *p)
++{
++    struct pt_output output = p->output;
++    p->output.pressed = p->output.released = 0;
++    p->output.look_x = p->output.look_y = 0;
++    return output;
++}
++static inline unsigned pt_glyph(char ch)
++{
++    switch (ch) {
++    case 'D': return 0x6b6e; case 'E': return 0x79e7;
++    case 'F': return 0x79e4; case 'G': return 0x396b;
++    case 'I': return 0x7497; case 'J': return 0x124e;
++    case 'K': return 0x5bad; case 'L': return 0x4927;
++    case 'M': return 0x5fed; case 'N': return 0x7b6d;
++    case 'O': return 0x2b6a; case 'P': return 0x6ba4;
++    case 'R': return 0x6bad; case 'S': return 0x388e;
++    case 'T': return 0x7492; case 'U': return 0x5b6f;
++    case 'V': return 0x5b6a; default: return 0;
++    }
++}
++static inline void pt_outline(pt_fill fill, void *context, int x, int y, int w, int h, unsigned shade)
++{
++    fill(context, x, y, w, 1, shade);
++    fill(context, x, y+h-1, w, 1, shade);
++    fill(context, x, y, 1, h, shade);
++    fill(context, x+w-1, y, 1, h, shade);
++}
++static inline void pt_label(pt_fill fill, void *context, const char *label, int x, int y, int scale)
++{
++    fill(context, x-2, y-2, ((int)strlen(label)*4-1)*scale+4, 5*scale+4, 0);
++    for (; *label; label++, x += 4*scale) {
++        unsigned glyph = pt_glyph(*label);
++        for (int row = 0; row < 5; row++) for (int col = 0; col < 3; col++)
++            if (glyph & (1u << (14-row*3-col)))
++                fill(context, x+col*scale, y+row*scale, scale, scale, 255);
++    }
++}
++static inline void pt_draw(const struct panel_touch *p, pt_fill fill, void *context, const char *use_label)
++{
++    const char *labels[PT_BUTTONS] = {"FIRE", use_label, "MENU", "GUN", "OK"};
++    int scale = p->width >= 640 ? 3 : 2;
++    for (unsigned i = 0; i < PT_BUTTONS; i++) {
++        struct pt_rect r = pt_buttons[i];
++        int x=r.x*p->width, y=r.y*p->height, w=r.w*p->width, h=r.h*p->height;
++        pt_outline(fill, context, x, y, w, h, p->output.held & (1u << i) ? 255 : 160);
++        pt_label(fill, context, labels[i], x+(w-((int)strlen(labels[i])*4-1)*scale)/2,
++                 y+(h-5*scale)/2, scale);
++    }
++    float x=p->width*.20f, y=p->height*.72f;
++    bool active = false;
++    for (unsigned i = 0; i < 10; i++)
++        if (p->fingers[i].active && p->fingers[i].region == PT_STICK) {
++            x=p->fingers[i].origin_x; y=p->fingers[i].origin_y; active=true; break;
++        }
++    int r=pt_radius(p), knob=scale*4;
++    pt_outline(fill, context, x-r, y-r, 2*r, 2*r, active ? 255 : 160);
++    pt_outline(fill, context, x+p->output.strafe*r-knob, y-p->output.forward*r-knob,
++               2*knob, 2*knob, 255);
++    if (!active) pt_label(fill, context, "MOVE", x-((4*4-1)*scale)/2, y+knob+4, scale);
++}
++#endif

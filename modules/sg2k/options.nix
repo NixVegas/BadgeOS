@@ -60,6 +60,8 @@ in
       description = "DRAM size in MiB.";
     };
 
+    memory.stripModuleSymbols = mkEnableOption "discarding the compiler-local symbols that loaded kernel modules keep in memory; the DSI panel turns it on";
+
     memory.cmaMiB = mkOption {
       type = types.int;
       # The desktop and video profiles raise it to 128.
@@ -137,7 +139,16 @@ in
     ledRing.enable = mkEnableOption "the WS2812 LED ring on SPI3";
     oled.enable = mkEnableOption "the I2C OLED";
     sharpPanel.enable = mkEnableOption "the Sharp memory panel as the system console";
+    dsiPanel.enable = mkEnableOption "the supported ST7701 DSI panel with CST340 touchscreen and PWM backlight";
     coreSelect.enable = mkEnableOption "switching the boot core from Linux";
+    coreSelect.backend = mkOption {
+      type = types.enum [
+        "latch"
+        "software"
+      ];
+      default = "latch";
+      description = "Use the board's core latch, or guarded SD firmware on an ARM-strapped board.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -162,6 +173,14 @@ in
       {
         assertion = cfg.hdmi.audio -> cfg.hdmi.enable;
         message = "hardware.sg2k.hdmi.audio needs hardware.sg2k.hdmi.enable";
+      }
+      {
+        assertion = cfg.dsiPanel.enable -> !cfg.hdmi.enable;
+        message = "hardware.sg2k.dsiPanel.enable needs hardware.sg2k.hdmi.enable off: they share the DSI port";
+      }
+      {
+        assertion = cfg.display.rotation == 0 || cfg.dsiPanel.enable;
+        message = "hardware.sg2k.display.rotation needs hardware.sg2k.dsiPanel.enable";
       }
     ];
   };

@@ -36,6 +36,10 @@
       "licheerv-nano-usb-host.dtsi"
       "licheerv-nano-no-wifi.dtsi"
       "licheerv-nano-no-ethernet.dtsi"
+      "licheerv-nano-dsi-panel.dtsi"
+      "sg200x-vip.dtsi"
+      "soph-rotation.dtsi"
+      "licheerv-nano-codec.dtsi"
     ];
   };
 }
