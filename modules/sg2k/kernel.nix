@@ -6,6 +6,11 @@
 }:
 {
   config = lib.mkIf config.hardware.sg2k.enable {
+    # The runtime modules without their debug and compiler-local symbols.
+    nixpkgs.overlays = lib.mkIf config.hardware.sg2k.memory.stripModuleSymbols [
+      (import ../../pkgs/v2/overlays/module-symbols.nix)
+    ];
+
     boot.kernelPackages = lib.mkDefault pkgs.linuxPackages_latest;
     boot.kernelPatches =
       import ../../pkgs/v2/kernel/patches { inherit lib; }

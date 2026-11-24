@@ -92,6 +92,20 @@ The firmware on its own is in `licheerv-nano-fip` (the polyglot), `licheerv-nano
 and `licheerv-nano-fip-riscv`, and the two systems deploy as `licheerv-nano-arm` and
 `licheerv-nano-riscv` (see [Updating](updating.md)).
 
+The MaixCAM is a Nano on a carrier with an ST7701 368x552 DSI panel and a Hynitron CST340
+touchscreen. `hardware.sg2k.dsiPanel.enable` turns them on: the device tree gets the
+panel, its backlight and the touchscreen, the fip releases the touchscreen's pads from the
+RTC power sequencer, and `st7701-panel-init` brings the panel up at boot on color bars.
+The touchscreen is an ordinary input device.
+
+The panel gets a desktop by default: `badge.graphics.enable` follows `dsiPanel.enable`,
+and Sway runs on the panel in its native mode. Set `badge.graphics.enable = false` for
+the color bars without a desktop. A USB keyboard needs `hardware.sg2k.usb.role = "host"`,
+which gives up the USB network link. The desktop runs in the Nano's base system, without
+the HDMI desktop profile or its extra memory reservation. The panel also turns on
+`hardware.sg2k.memory.stripModuleSymbols`, which drops the compiler-local symbols that
+loaded kernel modules otherwise keep in memory.
+
 ### Other boards
 
 If your board is close to one of these but not quite the same, everything a board file
